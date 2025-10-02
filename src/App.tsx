@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback  } from 'react';
 import { Phone, PhoneOff, Mic, Sparkles, Globe, Zap, Heart, Users, Clock, Star } from 'lucide-react';
 import { useAuth } from './hooks/useAuth';
 import { useMatching } from './hooks/useMatching';
@@ -46,7 +46,38 @@ const App = () => {
   
   // Live stats
   const stats = useLiveStats();
+  // Add this after your state declarations, before useEffects
+const endCall = useCallback(async () => {
+  // Stop all media tracks
+  if (localStream) {
+    localStream.getTracks().forEach(track => track.stop());
+  }
+  if (remoteStream) {
+    remoteStream.getTracks().forEach(track => track.stop());
+  }
   
+  if (matchedCall?.id) {
+    await supabase
+      .from('calls')
+      .update({
+        ended_at: new Date().toISOString(),
+        duration_seconds: callTimer,
+        status: 'ended'
+      })
+      .eq('id', matchedCall.id);
+  }
+  
+  setScreen('rating');
+}, [localStream, remoteStream, matchedCall?.id, callTimer]);
+
+// Now the auto-end useEffect is safe
+useEffect(() => {
+  if (callTimer >= duration * 60 && screen === 'call') {
+    endCall();
+  }
+}, [callTimer, duration, screen, endCall]); // ✅ Now includes endCall
+
+
   // Load questions
   useEffect(() => {
     loadQuestions();
@@ -103,7 +134,6 @@ const App = () => {
       const timer = setInterval(() => {
         setCallTimer(prev => {
           if (prev >= duration * 60) {
-            endCall();
             return prev;
           }
           return prev + 1;
@@ -129,6 +159,39 @@ const App = () => {
     }
   }, [matchedCall]);
   
+// Add this useEffect in your App.tsx, after the other useEffects
+
+// Monitor partner disconnect
+useEffect(() => {
+  if (!matchedCall?.id) return
+  
+  const channel = supabase
+    .channel(`call-monitor-${matchedCall.id}`)
+    .on(
+      'postgres_changes' as any,
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'calls',
+        filter: `id=eq.${matchedCall.id}`,
+      },
+      (payload: any) => {
+        console.log('📞 Call status changed:', payload.new.status)
+        
+        if (payload.new.status === 'ended' && screen === 'call') {
+          console.log('🔚 Call ended by partner')
+          // Show a more graceful message
+          setScreen('rating')
+        }
+      }
+    )
+    .subscribe()
+  
+  return () => {
+    channel.unsubscribe()
+  }
+}, [matchedCall?.id, screen])
+
   const handleStartMatching = () => {
     setScreen('waiting');
     startMatching();
@@ -161,22 +224,7 @@ const App = () => {
       setTimeout(() => setCurrentQuestion(null), 15000);
     }
   };
-  
-  const endCall = async () => {
-    if (matchedCall?.id) {
-      await supabase
-        .from('calls')
-        .update({
-          ended_at: new Date().toISOString(),
-          duration_seconds: callTimer,
-          status: 'ended'
-        })
-        .eq('id', matchedCall.id);
-    }
     
-    setScreen('rating');
-  };
-  
   const submitRating = async () => {
     if (matchedCall?.id && user?.id) {
       const isUser1 = matchedCall.user1_id === user.id;
@@ -186,11 +234,22 @@ const App = () => {
         .eq('id', matchedCall.id);
     }
     
-    // Reset
+    // Clean up streams if still active
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+    }
+    if (remoteStream) {
+      remoteStream.getTracks().forEach(track => track.stop());
+    }
+    
+    // Reset all state
     setCallTimer(0);
     setSyncCount(0);
     setShowRoulette(false);
     setRating(0);
+    setCurrentQuestion(null);
+    setDistance(0);
+    setPartnerLocation('Unknown');
     setScreen('landing');
   };
   
@@ -325,9 +384,38 @@ const App = () => {
     );
   }
   
-  // Call Screen
-  if (screen === 'call') {
-    return (
+// Call Screen
+if (screen === 'call') {
+  // Safety check - if no matched call, go back to landing
+  if (!matchedCall?.id) {
+    setScreen('landing');
+    return null;
+  }
+
+  return (
+    <>
+      {/* Audio elements - hidden but functional */}
+      {localStream && (
+        <audio
+          ref={(audio) => {
+            if (audio) audio.srcObject = localStream;
+          }}
+          autoPlay
+          muted
+          playsInline
+        />
+      )}
+      
+      {remoteStream && (
+        <audio
+          ref={(audio) => {
+            if (audio) audio.srcObject = remoteStream;
+          }}
+          autoPlay
+          playsInline
+        />
+      )}
+
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4">
         <div className="max-w-md w-full">
           {/* Emotional Sync Alert */}
@@ -357,7 +445,7 @@ const App = () => {
                 <p className="text-yellow-300 text-sm">Connecting...</p>
               </div>
             )}
-            
+
             {/* Emotional Echo Visualization */}
             <div className="mb-6">
               <h3 className="text-purple-200 text-sm font-medium mb-3 text-center flex items-center justify-center gap-2">
@@ -462,9 +550,9 @@ const App = () => {
           </div>
         </div>
       </div>
-    );
-  }
-  
+    </>
+  );
+}
   // Rating Screen
   if (screen === 'rating') {
     return (
@@ -501,18 +589,18 @@ const App = () => {
             <div className="flex items-center justify-center gap-3">
               {[1, 2, 3, 4, 5].map((star) => (
                 <button
-                  key={star}
-                  onClick={() => setRating(star)}
-                  className="transition-all hover:scale-110"
-                >
-                  <Star
-                    className={`w-10 h-10 ${
-                      star <= rating
-                        ? 'fill-yellow-400 text-yellow-400'
-                        : 'text-gray-400'
-                    }`}
-                  />
-                </button>
+  key={star}
+  onClick={() => setRating(star)}
+  className="transition-all hover:scale-125 transform active:scale-95"
+>
+  <Star
+    className={`w-10 h-10 transition-all duration-200 ${
+      star <= rating
+        ? 'fill-yellow-400 text-yellow-400 drop-shadow-[0_0_8px_rgba(250,204,21,0.5)]'
+        : 'text-gray-500 hover:text-gray-300'
+    }`}
+  />
+</button>
               ))}
             </div>
           </div>
@@ -541,11 +629,21 @@ const App = () => {
           </button>
           
           <button
-            onClick={() => setScreen('landing')}
-            className="w-full text-purple-200 hover:text-white transition-colors"
-          >
-            Back to home
-          </button>
+  onClick={() => {
+    // Clean up any remaining streams
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+    }
+    if (remoteStream) {
+      remoteStream.getTracks().forEach(track => track.stop());
+    }
+    
+    setScreen('landing');
+  }}
+  className="w-full text-purple-200 hover:text-white transition-colors"
+>
+  Back to home
+</button>
         </div>
       </div>
     );
