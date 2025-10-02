@@ -1,0 +1,54 @@
+import { useEffect, useState } from 'react'
+import type { EmotionType } from '../types'
+
+export const useEmotionAnalysis = (audioStream: MediaStream | null) => {
+  const [emotion, setEmotion] = useState<EmotionType>('calm')
+
+  useEffect(() => {
+    if (!audioStream) return
+
+    const audioContext = new AudioContext()
+    const analyser = audioContext.createAnalyser()
+    const source = audioContext.createMediaStreamSource(audioStream)
+
+    source.connect(analyser)
+    analyser.fftSize = 256
+
+    const bufferLength = analyser.frequencyBinCount
+    const dataArray = new Uint8Array(bufferLength)
+
+    const detectEmotion = () => {
+      analyser.getByteFrequencyData(dataArray)
+
+      // Calculate average amplitude
+      const average = dataArray.reduce((a, b) => a + b, 0) / bufferLength
+      
+      // Calculate frequency distribution
+      const lowFreq = dataArray.slice(0, 85).reduce((a, b) => a + b, 0) / 85
+      const midFreq = dataArray.slice(85, 170).reduce((a, b) => a + b, 0) / 85
+      const highFreq = dataArray.slice(170).reduce((a, b) => a + b, 0) / 86
+
+      // Simple emotion detection logic
+      if (average > 150 && highFreq > 100) {
+        setEmotion('excited')
+      } else if (average < 50) {
+        setEmotion('calm')
+      } else if (midFreq > lowFreq && midFreq > highFreq) {
+        setEmotion('happy')
+      } else {
+        setEmotion('contemplative')
+      }
+
+      requestAnimationFrame(detectEmotion)
+    }
+
+    detectEmotion()
+
+    return () => {
+      source.disconnect()
+      audioContext.close()
+    }
+  }, [audioStream])
+
+  return emotion
+}
