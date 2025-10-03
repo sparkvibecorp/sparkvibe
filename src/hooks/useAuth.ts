@@ -1,169 +1,272 @@
-import { useEffect, useState } from 'react'
-import { supabase } from '../lib/supabase'
-import type { User } from '../types'
+import { useEffect, useState, useRef } from "react";
+import { supabase } from "../lib/supabase";
+import type { User } from "../types";
 
 export const useAuth = () => {
-  const [user, setUser] = useState<User | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Prevent duplicate operations
+  const isInitializingRef = useRef(false);
+  const sessionRefreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isMountedRef = useRef(true);
 
   useEffect(() => {
-    initAuth()
+    initAuth();
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      console.log('🔐 Auth state changed:', _event, session?.user?.id)
-      if (session?.user) {
-        fetchUser(session.user.id)
-      } else {
-        setUser(null)
-        setLoading(false)
-      }
-    })
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      console.log("🔐 Auth state changed:", _event, session?.user?.id);
 
-    return () => subscription.unsubscribe()
-  }, [])
+      if (_event === "SIGNED_OUT") {
+        console.log("👋 User signed out");
+        setUser(null);
+        setLoading(false);
+        stopSessionRefresh();
+      } else if (_event === "TOKEN_REFRESHED") {
+        console.log("🔄 Token refreshed");
+      } else if (session?.user) {
+        await fetchUser(session.user.id);
+        startSessionRefresh();
+      } else {
+        setUser(null);
+        setLoading(false);
+        stopSessionRefresh();
+      }
+    });
+
+    // Cleanup on unmount
+    return () => {
+      isMountedRef.current = false;
+      subscription.unsubscribe();
+      stopSessionRefresh();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const initAuth = async () => {
-    console.log('🔐 Initializing auth...')
-    try {
-      const { data: { session } } = await supabase.auth.getSession()
-      
-      if (session?.user) {
-        console.log('✅ Existing session found:', session.user.id)
-        await fetchUser(session.user.id)
-      } else {
-        console.log('👤 No session, creating anonymous user...')
-        await signInAnonymously()
-      }
-    } catch (error) {
-      console.error('❌ Init auth error:', error)
-      setLoading(false)
+    if (isInitializingRef.current) {
+      console.log("⏭️ Already initializing, skipping...");
+      return;
     }
-  }
+
+    isInitializingRef.current = true;
+    console.log("🔐 Initializing auth...");
+
+    try {
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
+      if (sessionError) throw sessionError;
+
+      if (session?.user) {
+        console.log("✅ Existing session found:", session.user.id);
+        await checkAndRefreshSession(session);
+        await fetchUser(session.user.id);
+        startSessionRefresh();
+      } else {
+        console.log("👤 No session, creating anonymous user...");
+        await signInAnonymously();
+      }
+    } catch (err: any) {
+      console.error("❌ Init auth error:", err);
+      if (isMountedRef.current) {
+        setError(err?.message ?? "Failed to initialize authentication");
+        setLoading(false);
+      }
+    } finally {
+      isInitializingRef.current = false;
+    }
+  };
+
+  const checkAndRefreshSession = async (session: any) => {
+    if (!session?.expires_at) return;
+
+    const expiresAt = new Date(session.expires_at * 1000);
+    const timeUntilExpiry = expiresAt.getTime() - Date.now();
+
+    if (timeUntilExpiry < 5 * 60 * 1000) {
+      console.log("🔄 Session expiring soon, refreshing...");
+      try {
+        const { error } = await supabase.auth.refreshSession();
+        if (error) throw error;
+        console.log("✅ Session refreshed successfully");
+      } catch (err) {
+        console.error("❌ Error refreshing session:", err);
+      }
+    }
+  };
+
+  const startSessionRefresh = () => {
+    stopSessionRefresh();
+    console.log("⏰ Starting session refresh timer (15 min)");
+
+    sessionRefreshIntervalRef.current = setInterval(async () => {
+      try {
+        console.log("🔄 Auto-refreshing session...");
+        const { error } = await supabase.auth.refreshSession();
+        if (error) {
+          console.error("❌ Auto-refresh error:", error);
+          await initAuth();
+        } else {
+          console.log("✅ Session auto-refreshed");
+        }
+      } catch (err) {
+        console.error("❌ Error in auto-refresh:", err);
+      }
+    }, 15 * 60 * 1000);
+  };
+
+  const stopSessionRefresh = () => {
+    if (sessionRefreshIntervalRef.current) {
+      console.log("⏹️ Stopping session refresh timer");
+      clearInterval(sessionRefreshIntervalRef.current);
+      sessionRefreshIntervalRef.current = null;
+    }
+  };
 
   const fetchUser = async (userId: string) => {
     try {
-      console.log('📥 Fetching user:', userId)
-      
+      console.log("📥 Fetching user:", userId);
+
       const { data, error } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', userId)
-        .maybeSingle()
+        .from("users")
+        .select("*")
+        .eq("id", userId)
+        .maybeSingle();
 
       if (error) {
-        console.error('❌ Fetch user error:', error)
-        // If user doesn't exist, create them
-        await createUserRecord(userId)
-        return
+        console.error("❌ Fetch user error:", error);
+        if (error.code === "PGRST116") {
+          await createUserRecord(userId);
+        } else {
+          throw error;
+        }
+        return;
       }
 
       if (data) {
-        console.log('✅ User found:', data.id)
-        setUser(data)
+        console.log("✅ User found:", data.id);
+        setUser(data);
+        setError(null);
       } else {
-        console.log('👤 User not in DB, creating...')
-        await createUserRecord(userId)
+        console.log("👤 User not in DB, creating...");
+        await createUserRecord(userId);
       }
-    } catch (error) {
-      console.error('❌ Error in fetchUser:', error)
+    } catch (err: any) {
+      console.error("❌ Error in fetchUser:", err);
+      setError("Failed to fetch user data");
     } finally {
-      setLoading(false)
+      if (isMountedRef.current) setLoading(false);
     }
-  }
+  };
 
   const createUserRecord = async (userId: string) => {
     try {
-      console.log('➕ Creating user record:', userId)
-      
-      // First check if user already exists
-      const { data: existingUser } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', userId)
-        .maybeSingle()
-      
-      if (existingUser) {
-        console.log('✅ User already exists:', existingUser.id)
-        setUser(existingUser)
-        return
-      }
-      
-      // User doesn't exist, create them
+      console.log("➕ Creating user record:", userId);
+
       const { data, error } = await supabase
-        .from('users')
-        .insert([
+        .from("users")
+        .upsert(
           {
             id: userId,
             is_anonymous: true,
-            status: 'online',
+            status: "online",
             last_active: new Date().toISOString(),
           },
-        ])
+          { onConflict: "id" }
+        )
         .select()
-        .single()
+        .single();
 
-      if (error) {
-        console.error('❌ Create user error:', error)
-        
-        // If it's a duplicate key error (409), try to fetch the user
-        if (error.code === '23505' || error.message?.includes('duplicate')) {
-          console.log('🔄 Duplicate user, fetching existing...')
-          const { data: existingUser } = await supabase
-            .from('users')
-            .select('*')
-            .eq('id', userId)
-            .single()
-          
-          if (existingUser) {
-            console.log('✅ Fetched existing user:', existingUser.id)
-            setUser(existingUser)
-          }
-        }
-        return
-      }
-      
-      console.log('✅ User created:', data.id)
-      setUser(data)
-    } catch (error) {
-      console.error('❌ Error creating user record:', error)
+      if (error) throw error;
+
+      console.log("✅ User created/updated:", data.id);
+      setUser(data);
+      setError(null);
+    } catch (err: any) {
+      console.error("❌ Error creating user record:", err);
+      setError("Failed to create user account");
+      throw err;
     }
-  }
+  };
 
   const signInAnonymously = async () => {
     try {
-      console.log('🔑 Signing in anonymously...')
-      
-      const { data, error } = await supabase.auth.signInAnonymously()
-      
-      if (error) {
-        console.error('❌ Anonymous sign in error:', error)
-        throw error
-      }
-      
+      console.log("🔑 Signing in anonymously...");
+      const { data, error } = await supabase.auth.signInAnonymously();
+      if (error) throw error;
+
       if (data.user) {
-        console.log('✅ Anonymous sign in success:', data.user.id)
-        await createUserRecord(data.user.id)
+        console.log("✅ Anonymous sign in success:", data.user.id);
+        await createUserRecord(data.user.id);
+        startSessionRefresh();
       }
-    } catch (error) {
-      console.error('❌ Error signing in anonymously:', error)
-      setLoading(false)
+    } catch (err: any) {
+      console.error("❌ Error signing in anonymously:", err);
+      setError("Authentication failed");
+      setLoading(false);
     }
-  }
+  };
 
   const updatePresence = async (screen: string) => {
-    if (!user) return
-    
-    try {
-      await supabase.rpc('update_presence', {
-        p_user_id: user.id,
-        p_screen: screen,
-      })
-    } catch (error) {
-      console.error('❌ Error updating presence:', error)
-    }
-  }
+    if (!user) return console.log("⏭️ No user, skipping presence update");
 
-  return { user, loading, updatePresence }
-}
+    try {
+      const { error } = await supabase
+        .from("users")
+        .update({
+          last_active: new Date().toISOString(),
+          status:
+            screen === "call"
+              ? "in_call"
+              : screen === "waiting"
+              ? "in_queue"
+              : "online",
+        })
+        .eq("id", user.id);
+
+      if (error) console.error("❌ Error updating presence:", error);
+      else console.log("✅ Presence updated:", screen);
+    } catch (err) {
+      console.error("❌ Error updating presence:", err);
+    }
+  };
+
+  const refreshUser = async () => {
+    if (user?.id) {
+      console.log("🔄 Manually refreshing user data...");
+      await fetchUser(user.id);
+    }
+  };
+
+  const signOut = async () => {
+    try {
+      console.log("👋 Signing out...");
+      if (user?.id) {
+        await supabase.from("users").update({ status: "offline" }).eq("id", user.id);
+      }
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+
+      console.log("✅ Signed out successfully");
+      setUser(null);
+      stopSessionRefresh();
+    } catch (err) {
+      console.error("❌ Error signing out:", err);
+    }
+  };
+
+  return {
+    user,
+    loading,
+    error,
+    updatePresence,
+    refreshUser,
+    signOut,
+  };
+};

@@ -18,44 +18,92 @@ export const useWebRTC = (
   const iceCandidateQueueRef = useRef<RTCIceCandidateInit[]>([])
   const processedSignalsRef = useRef<Set<string>>(new Set())
 
-
-
-  // SINGLE MAIN USEEFFECT WITH PROPER CLEANUP
+  // MAIN USEEFFECT WITH PROPER CLEANUP
   useEffect(() => {
     if (!callId || !userId || !partnerId) return
     if (isInitializedRef.current) return
     
     isInitializedRef.current = true
+
+  // Add connection timeout
+  const connectionTimeout = setTimeout(() => {
+    if (!isConnected) {
+      console.log('⏰ WebRTC connection timeout')
+      alert('Failed to connect. Please try again.')
+      window.location.reload()
+    }
+  }, 30000) // 30 seconds
+
     initializeCall()
-  
+
+    // CLEANUP FUNCTION
     return () => {
-      console.log('🧹 Cleaning up WebRTC')
+      clearTimeout(connectionTimeout)
+      console.log('🧹 Starting WebRTC cleanup...')
       
+      // 1. Stop polling
       if (pollingIntervalRef.current) {
+        console.log('⏹️ Stopping polling interval')
         clearInterval(pollingIntervalRef.current)
         pollingIntervalRef.current = null
       }
       
+      // 2. Clean up peer connection
       if (peerConnectionRef.current) {
+        console.log('🔌 Closing peer connection')
+        
+        // Remove all event listeners
+        peerConnectionRef.current.ontrack = null
+        peerConnectionRef.current.onicecandidate = null
+        peerConnectionRef.current.onconnectionstatechange = null
+        peerConnectionRef.current.oniceconnectionstatechange = null
+        
+        // Close the connection
         peerConnectionRef.current.close()
         peerConnectionRef.current = null
       }
       
+      // 3. Clean up local stream (CRITICAL - prevents microphone staying on)
       if (localStream) {
-        localStream.getTracks().forEach((track) => track.stop())
+        console.log('🎤 Stopping local stream tracks')
+        localStream.getTracks().forEach((track) => {
+          console.log(`  Stopping ${track.kind} track:`, track.label)
+          track.stop()
+          track.enabled = false
+        })
+        setLocalStream(null)
       }
       
+      // 4. Clean up remote stream
+      if (remoteStream) {
+        console.log('🔊 Stopping remote stream tracks')
+        remoteStream.getTracks().forEach((track) => {
+          console.log(`  Stopping ${track.kind} track:`, track.label)
+          track.stop()
+        })
+        setRemoteStream(null)
+      }
+      
+      // 5. Unsubscribe from Supabase realtime
       if (channelRef.current) {
+        console.log('📡 Unsubscribing from channel')
         channelRef.current.unsubscribe()
         channelRef.current = null
       }
       
-      // Clear ICE candidate queue
+      // 6. Clear processed signals and ICE candidate queue
       processedSignalsRef.current.clear()
       iceCandidateQueueRef.current = []
       
+      // 7. Reset refs
       isInitializedRef.current = false
       lastProcessedSignalRef.current = null
+      
+      // 8. Reset state
+      setIsConnected(false)
+      setIsMuted(false)
+      
+      console.log('✅ WebRTC cleanup complete')
     }
   }, [callId, userId, partnerId])
 
@@ -148,10 +196,6 @@ export const useWebRTC = (
               ended_at: new Date().toISOString()
             })
             .eq('id', callId)
-          
-          // Notify user that partner left
-          alert('Your partner has left the call')
-          window.location.reload()
         }
       }
 
@@ -179,7 +223,6 @@ export const useWebRTC = (
         .subscribe((status) => {
           console.log('📡 Subscription status:', status)
           
-          // If realtime fails, start polling
           if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
             console.log('⚠️ Realtime failed, switching to polling')
             startPolling(callId, userId, peerConnection)
@@ -190,7 +233,6 @@ export const useWebRTC = (
 
       channelRef.current = channel
 
-      // Also start polling as backup (will stop if realtime works)
       setTimeout(() => {
         if (channelRef.current?.state !== 'joined') {
           console.log('🔄 Starting polling backup')
@@ -237,6 +279,15 @@ export const useWebRTC = (
 
     } catch (error) {
       console.error('❌ Error initializing call:', error)
+      
+      // Clean up on error
+      if (localStream) {
+        localStream.getTracks().forEach(track => {
+          track.stop()
+          track.enabled = false
+        })
+        setLocalStream(null)
+      }
     }
   }
 
@@ -273,8 +324,7 @@ export const useWebRTC = (
   const handleSignal = async (signal: any, peerConnection: RTCPeerConnection) => {
     if (!signal?.signal_data || !signal?.signal_type) return
   
-    // Create unique signal ID to prevent duplicates
-    const signalId = signal.id || `${signal.signal_type}-${Date.now()}`
+    const signalId = signal.id || `${signal.signal_type}-${signal.sender_id}-${signal.created_at}`
     
     if (processedSignalsRef.current.has(signalId)) {
       console.log('⏭️ Skipping duplicate signal:', signal.signal_type)
@@ -290,7 +340,6 @@ export const useWebRTC = (
       if (signalType === 'offer') {
         console.log('📥 Processing offer')
         
-        // Check if we already have a remote description
         if (peerConnection.remoteDescription) {
           console.log('⏭️ Already have remote description, skipping offer')
           return
@@ -299,7 +348,6 @@ export const useWebRTC = (
         await peerConnection.setRemoteDescription(new RTCSessionDescription(signalData))
         console.log('✅ Remote description set')
         
-        // Process queued ICE candidates
         console.log(`🧊 Processing ${iceCandidateQueueRef.current.length} queued ICE candidates`)
         for (const candidate of iceCandidateQueueRef.current) {
           try {
@@ -328,7 +376,6 @@ export const useWebRTC = (
       } else if (signalType === 'answer') {
         console.log('📥 Processing answer')
         
-        // Check if we already have a remote description
         if (peerConnection.remoteDescription) {
           console.log('⏭️ Already have remote description, skipping answer')
           return
@@ -337,7 +384,6 @@ export const useWebRTC = (
         await peerConnection.setRemoteDescription(new RTCSessionDescription(signalData))
         console.log('✅ Remote description set from answer')
         
-        // Process queued ICE candidates
         console.log(`🧊 Processing ${iceCandidateQueueRef.current.length} queued ICE candidates`)
         for (const candidate of iceCandidateQueueRef.current) {
           try {
@@ -371,10 +417,56 @@ export const useWebRTC = (
         track.enabled = !track.enabled
       })
       setIsMuted(!isMuted)
+      console.log(`🎤 Microphone ${!isMuted ? 'muted' : 'unmuted'}`)
     }
   }
 
-  // REMOVED THE SEPARATE cleanup() FUNCTION - it's now inline in the useEffect return
+  // MANUAL CLEANUP FUNCTION (can be called externally if needed)
+  const cleanup = () => {
+    console.log('🧹 Manual cleanup triggered')
+    
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current)
+      pollingIntervalRef.current = null
+    }
+    
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.ontrack = null
+      peerConnectionRef.current.onicecandidate = null
+      peerConnectionRef.current.onconnectionstatechange = null
+      peerConnectionRef.current.oniceconnectionstatechange = null
+      peerConnectionRef.current.close()
+      peerConnectionRef.current = null
+    }
+    
+    if (localStream) {
+      localStream.getTracks().forEach((track) => {
+        track.stop()
+        track.enabled = false
+      })
+      setLocalStream(null)
+    }
+    
+    if (remoteStream) {
+      remoteStream.getTracks().forEach((track) => {
+        track.stop()
+      })
+      setRemoteStream(null)
+    }
+    
+    if (channelRef.current) {
+      channelRef.current.unsubscribe()
+      channelRef.current = null
+    }
+    
+    processedSignalsRef.current.clear()
+    iceCandidateQueueRef.current = []
+    isInitializedRef.current = false
+    lastProcessedSignalRef.current = null
+    
+    setIsConnected(false)
+    setIsMuted(false)
+  }
 
   return {
     localStream,
@@ -382,5 +474,6 @@ export const useWebRTC = (
     isConnected,
     isMuted,
     toggleMute,
+    cleanup, // Export cleanup function
   }
 }

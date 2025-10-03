@@ -17,8 +17,17 @@ export const useEmotionAnalysis = (audioStream: MediaStream | null) => {
     const bufferLength = analyser.frequencyBinCount
     const dataArray = new Uint8Array(bufferLength)
 
-    const detectEmotion = () => {
-      analyser.getByteFrequencyData(dataArray)
+    let lastUpdate = 0
+const detectEmotion = () => {
+  const now = Date.now()
+  if (now - lastUpdate < 100) { // Update max every 100ms
+    requestAnimationFrame(detectEmotion)
+    return
+  }
+  lastUpdate = now
+  
+  analyser.getByteFrequencyData(dataArray)
+      
 
       // Calculate average amplitude
       const average = dataArray.reduce((a, b) => a + b, 0) / bufferLength
