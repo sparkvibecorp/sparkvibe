@@ -226,6 +226,61 @@ export interface Database {
           is_read?: boolean
         }
       }
+      emotional_syncs: {
+        Row: {
+          id: string
+          created_at: string
+          call_id: string
+          user1_emotion: string
+          user2_emotion: string
+          sync_strength: number
+          seconds_into_call: number
+        }
+        Insert: {
+          id?: string
+          created_at?: string
+          call_id: string
+          user1_emotion: string
+          user2_emotion: string
+          sync_strength: number
+          seconds_into_call: number
+        }
+        Update: {
+          id?: string
+          created_at?: string
+          call_id?: string
+          user1_emotion?: string
+          user2_emotion?: string
+          sync_strength?: number
+          seconds_into_call?: number
+        }
+      }
+      question_usage: {
+        Row: {
+          id: string
+          created_at: string
+          question_id: string
+          call_id: string
+          user_id: string
+        }
+        Insert: {
+          id?: string
+          created_at?: string
+          question_id: string
+          call_id: string
+          user_id: string
+        }
+        Update: {
+          id?: string
+          created_at?: string
+          question_id?: string
+          call_id?: string
+          user_id?: string
+        }
+      }
+    }
+    Views: {
+      [_ in never]: never
     }
     Functions: {
       get_live_stats: {
@@ -234,7 +289,7 @@ export interface Database {
           active_users: number
           users_in_queue: number
           ongoing_calls: number
-        }[]
+        }
       }
       can_join_queue: {
         Args: { p_user_id: string }
@@ -245,7 +300,11 @@ export interface Database {
         Returns: void
       }
       track_question_used: {
-        Args: { p_question_id: string; p_call_id: string; p_user_id: string }
+        Args: { 
+          p_question_id: string
+          p_call_id: string
+          p_user_id: string
+        }
         Returns: void
       }
       track_emotional_sync: {
@@ -258,6 +317,12 @@ export interface Database {
         }
         Returns: void
       }
+    }
+    Enums: {
+      [_ in never]: never
+    }
+    CompositeTypes: {
+      [_ in never]: never
     }
   }
 }

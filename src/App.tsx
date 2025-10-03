@@ -1,17 +1,31 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Phone, PhoneOff, Mic, Sparkles, Globe, Zap, Heart, Users, Clock, Star } from 'lucide-react';
 import { useAuth } from './hooks/useAuth';
 import { useMatching } from './hooks/useMatching';
 import { useWebRTC } from './hooks/useWebRTC';
 import { useEmotionAnalysis } from './hooks/useEmotionAnalysis';
+import { useLiveStats } from './hooks/useLiveStats'; // ADD THIS
 import { supabase } from './lib/supabase';
 import { formatTime, emotionColors, emotionWaves, getDifficultyColor, getDifficultyTextColor } from './utils/helpers';
 import type { VulnerabilityQuestion } from './types';
-import type { LiveStats } from './types';
 
 const App = () => {
+
+  useEffect(() => {
+    const clearStuckAuth = async () => {
+      const searchParams = new URLSearchParams(window.location.search);
+      if (searchParams.get('clearauth') === 'true') {
+        console.log('Clearing auth state...');
+        await supabase.auth.signOut();
+        localStorage.clear();
+        sessionStorage.clear();
+        window.location.href = window.location.origin;
+      }
+    };
+    clearStuckAuth();
+  }, []);
   // Auth
-  const { user, loading: authLoading, updatePresence } = useAuth();
+  const { user, loading: authLoading, error: authError, updatePresence } = useAuth();
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
 
   // App state
@@ -21,7 +35,7 @@ const App = () => {
   const [rating, setRating] = useState<number>(0);
 
   // Matching
-  const { isSearching, matchedCall, startMatching, cancelMatching } = useMatching(user?.id, duration);
+  const { matchedCall, startMatching, cancelMatching } = useMatching(user?.id, duration);
 
   // WebRTC
   const { localStream, remoteStream, isConnected, isMuted, toggleMute } = useWebRTC(
@@ -45,12 +59,8 @@ const App = () => {
   const [distance, setDistance] = useState<number>(0);
   const [partnerLocation, setPartnerLocation] = useState<string>('Unknown');
 
-  // Live stats
-  const [stats, setStats] = useState<LiveStats>({
-    active_users: 0,
-    users_in_queue: 0,
-    ongoing_calls: 0,
-  });
+  // Live stats - NOW USING THE HOOK
+  const stats = useLiveStats();
 
   // loadQuestions must be defined before the useEffect that calls it
   const loadQuestions = async () => {
@@ -98,6 +108,19 @@ const App = () => {
       setScreen('rating');
     }
   }, [localStream, remoteStream, matchedCall?.id, callTimer]);
+
+// Timeout for auth loading
+useEffect(() => {
+  if (authLoading) {
+    const timeout = setTimeout(() => {
+      console.log('⏰ Auth loading timeout - forcing reload');
+      alert('Connection is taking too long. The page will reload.');
+      window.location.reload();
+    }, 15000); // 15 second timeout
+
+    return () => clearTimeout(timeout);
+  }
+}, [authLoading]);
 
   useEffect(() => {
     const handleBeforeUnload = async () => {
@@ -175,7 +198,9 @@ const App = () => {
           p_user2_emotion: partnerEmotion,
           p_sync_strength: 1.0,
           p_seconds_into_call: callTimer,
-        }).catch(err => console.error('track_emotional_sync rpc failed', err));
+        }).then(({ error }) => {
+          if (error) console.error('track_emotional_sync rpc failed', error);
+        });
       }
 
       const t = setTimeout(() => setIsEmotionalSync(false), 3000);
@@ -254,7 +279,6 @@ const App = () => {
   };
 
   const spinRoulette = async () => {
-    const difficulties = ['light', 'medium', 'deep'];
     const weights = [0.5, 0.3, 0.2];
     const random = Math.random();
     let difficulty: string;
@@ -274,7 +298,9 @@ const App = () => {
           p_question_id: question.id,
           p_call_id: matchedCall.id,
           p_user_id: user.id,
-        }).catch(err => console.error('track_question_used rpc failed', err));
+        }).then(({ error }) => {
+          if (error) console.error('track_question_used rpc failed', error);
+        });
       }
 
       setTimeout(() => setCurrentQuestion(null), 15000);
@@ -320,16 +346,61 @@ const App = () => {
     </div>
   ) : null;
 
-  if (authLoading) {
-    return (
-      <>
-        {OfflineBanner}
-        <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center">
-          <div className="text-white text-xl">Loading App...</div>
+// Replace your current loading check with this:
+
+if (authLoading) {
+  return (
+    <>
+      {OfflineBanner}
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4">
+        <div className="text-center">
+          {authError ? (
+            // Error state
+            <div className="max-w-md">
+              <div className="bg-red-500/20 border-2 border-red-400 rounded-2xl p-6 mb-4">
+                <h2 className="text-white text-xl font-bold mb-2">Connection Error</h2>
+                <p className="text-red-200 text-sm mb-4">{authError}</p>
+              </div>
+              <button
+                onClick={() => window.location.reload()}
+                className="bg-purple-500 hover:bg-purple-600 text-white font-bold py-3 px-6 rounded-xl transition-all"
+              >
+                Try Again
+              </button>
+              <p className="text-purple-300 text-sm mt-4">
+                If this persists, check your internet connection
+              </p>
+            </div>
+          ) : (
+            // Loading state
+            <div>
+              <div className="relative w-20 h-20 mx-auto mb-6">
+                <div className="absolute inset-0 bg-purple-500/30 rounded-full animate-ping"></div>
+                <div className="absolute inset-0 bg-purple-500/50 rounded-full animate-pulse"></div>
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <Sparkles className="w-10 h-10 text-white animate-pulse" />
+                </div>
+              </div>
+              <h2 className="text-white text-2xl font-bold mb-2">Setting things up...</h2>
+              <p className="text-purple-200">This should only take a moment</p>
+              
+              {/* Add timeout warning if loading too long */}
+              <p className="text-purple-300 text-xs mt-6">
+                Taking too long?{' '}
+                <button
+                  onClick={() => window.location.reload()}
+                  className="underline hover:text-white"
+                >
+                  Refresh page
+                </button>
+              </p>
+            </div>
+          )}
         </div>
-      </>
-    );
-  }
+      </div>
+    </>
+  );
+}
 
   // Landing Screen
   if (screen === 'landing') {

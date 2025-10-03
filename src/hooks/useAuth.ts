@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { supabase } from "../lib/supabase";
 import type { User } from "../types";
 
@@ -7,46 +7,152 @@ export const useAuth = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Prevent duplicate operations
   const isInitializingRef = useRef(false);
   const sessionRefreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isMountedRef = useRef(true);
 
-  useEffect(() => {
-    initAuth();
+  const fetchUser = useCallback(async (userId: string) => {
+    try {
+      console.log("📥 Fetching user:", userId);
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      console.log("🔐 Auth state changed:", _event, session?.user?.id);
+      const { data, error } = await supabase
+        .from("users")
+        .select("*")
+        .eq("id", userId)
+        .maybeSingle();
 
-      if (_event === "SIGNED_OUT") {
-        console.log("👋 User signed out");
-        setUser(null);
-        setLoading(false);
-        stopSessionRefresh();
-      } else if (_event === "TOKEN_REFRESHED") {
-        console.log("🔄 Token refreshed");
-      } else if (session?.user) {
-        await fetchUser(session.user.id);
-        startSessionRefresh();
-      } else {
-        setUser(null);
-        setLoading(false);
-        stopSessionRefresh();
+      if (error) {
+        console.error("❌ Fetch user error:", error);
+        if (error.code === "PGRST116") {
+          await createUserRecord(userId);
+        } else {
+          throw error;
+        }
+        return;
       }
-    });
 
-    // Cleanup on unmount
-    return () => {
-      isMountedRef.current = false;
-      subscription.unsubscribe();
-      stopSessionRefresh();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+      if (data) {
+        console.log("✅ User found:", data.id);
+        if (isMountedRef.current) {
+          setUser(data);
+          setError(null);
+          setLoading(false);
+        }
+      } else {
+        console.log("👤 User not in DB, creating...");
+        await createUserRecord(userId);
+      }
+    } catch (err: any) {
+      console.error("❌ Error in fetchUser:", err);
+      if (isMountedRef.current) {
+        setError("Failed to fetch user data");
+        setLoading(false);
+      }
+    }
   }, []);
 
-  const initAuth = async () => {
+  const createUserRecord = useCallback(async (userId: string) => {
+    try {
+      console.log("➕ Creating user record:", userId);
+
+      const { data, error } = await supabase
+        .from("users")
+        .upsert(
+          {
+            id: userId,
+            is_anonymous: true,
+            status: "online",
+            last_active: new Date().toISOString(),
+          },
+          { onConflict: "id" }
+        )
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      console.log("✅ User created/updated:", data.id);
+      if (isMountedRef.current) {
+        setUser(data);
+        setError(null);
+        setLoading(false);
+      }
+    } catch (err: any) {
+      console.error("❌ Error creating user record:", err);
+      if (isMountedRef.current) {
+        setError("Failed to create user account");
+        setLoading(false);
+      }
+      throw err;
+    }
+  }, []);
+
+  const signInAnonymously = useCallback(async () => {
+    try {
+      console.log("🔑 Signing in anonymously...");
+      const { data, error } = await supabase.auth.signInAnonymously();
+      if (error) throw error;
+
+      if (data.user) {
+        console.log("✅ Anonymous sign in success:", data.user.id);
+        await createUserRecord(data.user.id);
+        startSessionRefresh();
+      }
+    } catch (err: any) {
+      console.error("❌ Error signing in anonymously:", err);
+      if (isMountedRef.current) {
+        setError("Authentication failed");
+        setLoading(false);
+      }
+    }
+  }, [createUserRecord]);
+
+  const checkAndRefreshSession = useCallback(async (session: any) => {
+    if (!session?.expires_at) return;
+
+    const expiresAt = new Date(session.expires_at * 1000);
+    const timeUntilExpiry = expiresAt.getTime() - Date.now();
+
+    if (timeUntilExpiry < 5 * 60 * 1000) {
+      console.log("🔄 Session expiring soon, refreshing...");
+      try {
+        const { error } = await supabase.auth.refreshSession();
+        if (error) throw error;
+        console.log("✅ Session refreshed successfully");
+      } catch (err) {
+        console.error("❌ Error refreshing session:", err);
+      }
+    }
+  }, []);
+
+  const startSessionRefresh = useCallback(() => {
+    stopSessionRefresh();
+    console.log("⏰ Starting session refresh timer (15 min)");
+
+    sessionRefreshIntervalRef.current = setInterval(async () => {
+      try {
+        console.log("🔄 Auto-refreshing session...");
+        const { error } = await supabase.auth.refreshSession();
+        if (error) {
+          console.error("❌ Auto-refresh error:", error);
+        } else {
+          console.log("✅ Session auto-refreshed");
+        }
+      } catch (err) {
+        console.error("❌ Error in auto-refresh:", err);
+      }
+    }, 15 * 60 * 1000);
+  }, []);
+
+  const stopSessionRefresh = useCallback(() => {
+    if (sessionRefreshIntervalRef.current) {
+      console.log("⏹️ Stopping session refresh timer");
+      clearInterval(sessionRefreshIntervalRef.current);
+      sessionRefreshIntervalRef.current = null;
+    }
+  }, []);
+
+  const initAuth = useCallback(async () => {
     if (isInitializingRef.current) {
       console.log("⏭️ Already initializing, skipping...");
       return;
@@ -81,137 +187,43 @@ export const useAuth = () => {
     } finally {
       isInitializingRef.current = false;
     }
-  };
+  }, [checkAndRefreshSession, fetchUser, signInAnonymously, startSessionRefresh]);
 
-  const checkAndRefreshSession = async (session: any) => {
-    if (!session?.expires_at) return;
+  useEffect(() => {
+    initAuth();
 
-    const expiresAt = new Date(session.expires_at * 1000);
-    const timeUntilExpiry = expiresAt.getTime() - Date.now();
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      console.log("🔐 Auth state changed:", _event, session?.user?.id);
 
-    if (timeUntilExpiry < 5 * 60 * 1000) {
-      console.log("🔄 Session expiring soon, refreshing...");
-      try {
-        const { error } = await supabase.auth.refreshSession();
-        if (error) throw error;
-        console.log("✅ Session refreshed successfully");
-      } catch (err) {
-        console.error("❌ Error refreshing session:", err);
-      }
-    }
-  };
-
-  const startSessionRefresh = () => {
-    stopSessionRefresh();
-    console.log("⏰ Starting session refresh timer (15 min)");
-
-    sessionRefreshIntervalRef.current = setInterval(async () => {
-      try {
-        console.log("🔄 Auto-refreshing session...");
-        const { error } = await supabase.auth.refreshSession();
-        if (error) {
-          console.error("❌ Auto-refresh error:", error);
-          await initAuth();
-        } else {
-          console.log("✅ Session auto-refreshed");
+      if (_event === "SIGNED_OUT") {
+        console.log("👋 User signed out");
+        if (isMountedRef.current) {
+          setUser(null);
+          setLoading(false);
         }
-      } catch (err) {
-        console.error("❌ Error in auto-refresh:", err);
-      }
-    }, 15 * 60 * 1000);
-  };
-
-  const stopSessionRefresh = () => {
-    if (sessionRefreshIntervalRef.current) {
-      console.log("⏹️ Stopping session refresh timer");
-      clearInterval(sessionRefreshIntervalRef.current);
-      sessionRefreshIntervalRef.current = null;
-    }
-  };
-
-  const fetchUser = async (userId: string) => {
-    try {
-      console.log("📥 Fetching user:", userId);
-
-      const { data, error } = await supabase
-        .from("users")
-        .select("*")
-        .eq("id", userId)
-        .maybeSingle();
-
-      if (error) {
-        console.error("❌ Fetch user error:", error);
-        if (error.code === "PGRST116") {
-          await createUserRecord(userId);
-        } else {
-          throw error;
-        }
-        return;
-      }
-
-      if (data) {
-        console.log("✅ User found:", data.id);
-        setUser(data);
-        setError(null);
-      } else {
-        console.log("👤 User not in DB, creating...");
-        await createUserRecord(userId);
-      }
-    } catch (err: any) {
-      console.error("❌ Error in fetchUser:", err);
-      setError("Failed to fetch user data");
-    } finally {
-      if (isMountedRef.current) setLoading(false);
-    }
-  };
-
-  const createUserRecord = async (userId: string) => {
-    try {
-      console.log("➕ Creating user record:", userId);
-
-      const { data, error } = await supabase
-        .from("users")
-        .upsert(
-          {
-            id: userId,
-            is_anonymous: true,
-            status: "online",
-            last_active: new Date().toISOString(),
-          },
-          { onConflict: "id" }
-        )
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      console.log("✅ User created/updated:", data.id);
-      setUser(data);
-      setError(null);
-    } catch (err: any) {
-      console.error("❌ Error creating user record:", err);
-      setError("Failed to create user account");
-      throw err;
-    }
-  };
-
-  const signInAnonymously = async () => {
-    try {
-      console.log("🔑 Signing in anonymously...");
-      const { data, error } = await supabase.auth.signInAnonymously();
-      if (error) throw error;
-
-      if (data.user) {
-        console.log("✅ Anonymous sign in success:", data.user.id);
-        await createUserRecord(data.user.id);
+        stopSessionRefresh();
+      } else if (_event === "TOKEN_REFRESHED") {
+        console.log("🔄 Token refreshed");
+      } else if (session?.user) {
+        await fetchUser(session.user.id);
         startSessionRefresh();
+      } else {
+        if (isMountedRef.current) {
+          setUser(null);
+          setLoading(false);
+        }
+        stopSessionRefresh();
       }
-    } catch (err: any) {
-      console.error("❌ Error signing in anonymously:", err);
-      setError("Authentication failed");
-      setLoading(false);
-    }
-  };
+    });
+
+    return () => {
+      isMountedRef.current = false;
+      subscription.unsubscribe();
+      stopSessionRefresh();
+    };
+  }, [initAuth, fetchUser, startSessionRefresh, stopSessionRefresh]);
 
   const updatePresence = async (screen: string) => {
     if (!user) return console.log("⏭️ No user, skipping presence update");
