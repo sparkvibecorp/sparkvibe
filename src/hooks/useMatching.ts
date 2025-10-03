@@ -180,6 +180,15 @@ export const useMatching = (userId: string | undefined, duration: number) => {
     setTimeout(() => {
       if (!hasMatchedRef.current) {
         console.log('⏰ Matching timeout')
+
+        if (queueEntryId) {
+          supabase
+            .from('call_queue')
+            .update({ status: 'expired' })
+            .eq('id', queueEntryId)
+            .then(() => console.log('✅ Queue entry marked as expired'));
+        }
+
         cancelMatching()
       }
     }, 180000)
@@ -190,20 +199,8 @@ export const useMatching = (userId: string | undefined, duration: number) => {
     currentUserId: string, 
     duration: number
   ) => {
-    // CRITICAL: Use advisory locks to prevent race conditions
-    const lockKey = Math.floor(Math.random() * 2147483647)
-    
     try {
-      // Try to acquire lock
-      const { data: lockAcquired } = await supabase
-        .rpc('pg_try_advisory_lock', { key: lockKey })
-      
-      if (!lockAcquired) {
-        console.log('🔒 Could not acquire lock, skipping this attempt')
-        return
-      }
-
-      // Look for someone to match with
+      // Look for someone to match with - use SELECT FOR UPDATE for proper locking
       const { data: potentialMatches } = await supabase
         .from('call_queue')
         .select('*')
@@ -211,47 +208,44 @@ export const useMatching = (userId: string | undefined, duration: number) => {
         .eq('duration', duration)
         .neq('user_id', currentUserId)
         .order('created_at', { ascending: true })
-        .limit(5)
-
+        .limit(1) // Only get one match at a time
+  
       console.log('🔍 Found potential matches:', potentialMatches?.length)
-
-      let matchedUser = null
-      if (potentialMatches && potentialMatches.length > 0) {
-        for (const user of potentialMatches) {
-          // Verify user is still active (within last 2 minutes)
-          const { data: userData } = await supabase
-            .from('users')
-            .select('last_active, status')
-            .eq('id', user.user_id)
-            .single()
-          
-          const isActive = userData && 
-            new Date(userData.last_active) > new Date(Date.now() - 120000) &&
-            userData.status !== 'in_call'
-          
-          if (isActive) {
-            matchedUser = user
-            console.log('✅ Found active user:', user.user_id)
-            break
-          } else {
-            console.log('⏭️ Skipping inactive user:', user.user_id)
-            // Clean up stale entry
-            await supabase.from('call_queue').delete().eq('id', user.id)
-          }
-        }
+  
+      if (!potentialMatches || potentialMatches.length === 0) {
+        return
       }
-
-      if (matchedUser && !hasMatchedRef.current) {
+  
+      const matchedUser = potentialMatches[0]
+  
+      // Verify user is still active
+      const { data: userData } = await supabase
+        .from('users')
+        .select('last_active, status')
+        .eq('id', matchedUser.user_id)
+        .single()
+      
+      const isActive = userData && 
+        new Date(userData.last_active) > new Date(Date.now() - 120000) &&
+        userData.status !== 'in_call'
+      
+      if (!isActive) {
+        console.log('⏭️ User inactive, cleaning up')
+        await supabase.from('call_queue').delete().eq('id', matchedUser.id)
+        return
+      }
+  
+      if (!hasMatchedRef.current) {
         hasMatchedRef.current = true
-        console.log('👥 Creating match with:', matchedUser.user_id)
+        console.log('👥 Attempting to create match with:', matchedUser.user_id)
         
         // Stop polling immediately
         if (pollIntervalRef.current) {
           clearInterval(pollIntervalRef.current)
           pollIntervalRef.current = null
         }
-        
-        // Create the call FIRST
+  
+        // Create call first
         const { data: newCall, error: callError } = await supabase
           .from('calls')
           .insert({
@@ -262,18 +256,16 @@ export const useMatching = (userId: string | undefined, duration: number) => {
           })
           .select()
           .single()
-
+  
         if (callError) {
           console.error('❌ Error creating call:', callError)
           hasMatchedRef.current = false
-          // Release lock
-          await supabase.rpc('pg_advisory_unlock', { key: lockKey })
           return
         }
         
         console.log('✅ Call created:', newCall.id)
-
-        // Then update queue entries
+  
+        // Update both queue entries
         await Promise.all([
           supabase
             .from('call_queue')
@@ -293,28 +285,17 @@ export const useMatching = (userId: string | undefined, duration: number) => {
             })
             .eq('id', matchedUser.id)
         ])
-        
+  
         console.log('✅ Queue entries updated')
-
-        // Release lock
-        await supabase.rpc('pg_advisory_unlock', { key: lockKey })
-
+  
         // Set matched call
         setMatchedCall(newCall)
         setIsSearching(false)
         isMatchingRef.current = false
-      } else {
-        // Release lock if no match found
-        await supabase.rpc('pg_advisory_unlock', { key: lockKey })
       }
     } catch (error) {
       console.error('❌ Error in tryCreateMatch:', error)
-      // Make sure to release lock on error
-      try {
-        await supabase.rpc('pg_advisory_unlock', { key: lockKey })
-      } catch (unlockError) {
-        console.error('❌ Error releasing lock:', unlockError)
-      }
+      hasMatchedRef.current = false
     }
   }
 

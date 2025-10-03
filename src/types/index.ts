@@ -194,6 +194,32 @@ export interface Database {
           is_active?: boolean
         }
       }
+      call_questions: {
+        Row: {
+          id: string
+          created_at: string
+          call_id: string
+          question_id: string
+          shown_by_user_id: string
+          shown_at: string | null
+        }
+        Insert: {
+          id?: string
+          created_at?: string
+          call_id: string
+          question_id: string
+          shown_by_user_id: string
+          shown_at?: string | null
+        }
+        Update: {
+          id?: string
+          created_at?: string
+          call_id?: string
+          question_id?: string
+          shown_by_user_id?: string
+          shown_at?: string | null
+        }
+      }
       webrtc_signals: {
         Row: {
           id: string
@@ -331,6 +357,7 @@ export type User = Database['public']['Tables']['users']['Row']
 export type Call = Database['public']['Tables']['calls']['Row']
 export type CallQueue = Database['public']['Tables']['call_queue']['Row']
 export type VulnerabilityQuestion = Database['public']['Tables']['vulnerability_questions']['Row']
+export type CallQuestion = Database['public']['Tables']['call_questions']['Row']
 export type WebRTCSignal = Database['public']['Tables']['webrtc_signals']['Row']
 
 export type EmotionType = 'excited' | 'calm' | 'happy' | 'contemplative'

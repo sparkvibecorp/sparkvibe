@@ -10,6 +10,7 @@ export const useWebRTC = (
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null)
   const [isConnected, setIsConnected] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
+  
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
   const channelRef = useRef<any>(null)
   const isInitializedRef = useRef(false)
@@ -17,22 +18,25 @@ export const useWebRTC = (
   const lastProcessedSignalRef = useRef<string | null>(null)
   const iceCandidateQueueRef = useRef<RTCIceCandidateInit[]>([])
   const processedSignalsRef = useRef<Set<string>>(new Set())
+  const localStreamRef = useRef<MediaStream | null>(null)
+  const remoteStreamRef = useRef<MediaStream | null>(null)
 
-  // MAIN USEEFFECT WITH PROPER CLEANUP
+  // MAIN USEEFFECT WITH PROPER CLEANUP - FIXED
   useEffect(() => {
     if (!callId || !userId || !partnerId) return
     if (isInitializedRef.current) return
     
     isInitializedRef.current = true
 
-  // Add connection timeout
-  const connectionTimeout = setTimeout(() => {
-    if (!isConnected) {
-      console.log('⏰ WebRTC connection timeout')
-      alert('Failed to connect. Please try again.')
-      window.location.reload()
-    }
-  }, 30000) // 30 seconds
+    // Add connection timeout
+    const connectionTimeout = setTimeout(() => {
+      if (!peerConnectionRef.current || 
+          peerConnectionRef.current.connectionState !== 'connected') {
+        console.log('⏰ WebRTC connection timeout')
+        alert('Failed to connect. Please try again.')
+        window.location.reload()
+      }
+    }, 30000) // 30 seconds
 
     initializeCall()
 
@@ -64,24 +68,28 @@ export const useWebRTC = (
       }
       
       // 3. Clean up local stream (CRITICAL - prevents microphone staying on)
-      if (localStream) {
+      const currentLocalStream = localStreamRef.current
+      if (currentLocalStream) {
         console.log('🎤 Stopping local stream tracks')
-        localStream.getTracks().forEach((track) => {
+        currentLocalStream.getTracks().forEach((track) => {
           console.log(`  Stopping ${track.kind} track:`, track.label)
           track.stop()
           track.enabled = false
         })
         setLocalStream(null)
+        localStreamRef.current = null
       }
       
       // 4. Clean up remote stream
-      if (remoteStream) {
+      const currentRemoteStream = remoteStreamRef.current
+      if (currentRemoteStream) {
         console.log('🔊 Stopping remote stream tracks')
-        remoteStream.getTracks().forEach((track) => {
+        currentRemoteStream.getTracks().forEach((track) => {
           console.log(`  Stopping ${track.kind} track:`, track.label)
           track.stop()
         })
         setRemoteStream(null)
+        remoteStreamRef.current = null
       }
       
       // 5. Unsubscribe from Supabase realtime
@@ -105,7 +113,7 @@ export const useWebRTC = (
       
       console.log('✅ WebRTC cleanup complete')
     }
-  }, [callId, userId, partnerId])
+  }, [callId, userId, partnerId]) // FIXED: Only these dependencies!
 
   const initializeCall = async () => {
     if (!callId || !userId || !partnerId) return
@@ -113,6 +121,7 @@ export const useWebRTC = (
     console.log('🎯 Initializing WebRTC call:', { callId, userId, partnerId })
     
     try {
+      // 1. Get user media
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           echoCancellation: true,
@@ -121,8 +130,10 @@ export const useWebRTC = (
         } 
       })
       setLocalStream(stream)
+      localStreamRef.current = stream // Store in ref
       console.log('✅ Got local media stream')
 
+      // 2. Determine if this user is the initiator
       const { data: call } = await supabase
         .from('calls')
         .select('user1_id')
@@ -132,163 +143,74 @@ export const useWebRTC = (
       const isInitiator = call?.user1_id === userId
       console.log(`📞 Role: ${isInitiator ? 'INITIATOR' : 'RECEIVER'}`)
 
-      const configuration = {
+      // 3. Create peer connection
+      const peerConnection = new RTCPeerConnection({
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
           { urls: 'stun:stun2.l.google.com:19302' },
-        ]
-      }
-
-      const peerConnection = new RTCPeerConnection(configuration)
+        ],
+      })
       peerConnectionRef.current = peerConnection
 
-      stream.getTracks().forEach(track => {
+      // 4. Add local stream tracks
+      stream.getTracks().forEach((track) => {
         peerConnection.addTrack(track, stream)
-        console.log('➕ Added local track:', track.kind)
+        console.log('🎵 Added local track:', track.kind)
       })
 
+      // 5. Handle remote stream
       peerConnection.ontrack = (event) => {
-        console.log('🎵 Received remote track')
-        setRemoteStream(event.streams[0])
+        console.log('🎵 Received remote track:', event.track.kind)
+        const remote = new MediaStream()
+        event.streams[0].getTracks().forEach((track) => {
+          remote.addTrack(track)
+        })
+        setRemoteStream(remote)
+        remoteStreamRef.current = remote // Store in ref
       }
 
+      // 6. Handle ICE candidates
       peerConnection.onicecandidate = async (event) => {
         if (event.candidate) {
-          console.log('🧊 Sending ICE candidate')
+          console.log('🧊 New ICE candidate')
           try {
             await supabase.from('webrtc_signals').insert({
               call_id: callId,
               sender_id: userId,
               receiver_id: partnerId,
               signal_type: 'ice-candidate',
-              signal_data: event.candidate,
+              signal_data: event.candidate.toJSON(),
             })
+            console.log('📨 ICE candidate sent')
           } catch (error) {
-            console.error('❌ Error sending ICE candidate:', error)
+            console.error('❌ Failed to send ICE candidate:', error)
           }
         }
       }
 
-// In useWebRTC.ts, update the onconnectionstatechange handler:
-
-peerConnection.onconnectionstatechange = async () => {
-  console.log('🔌 Connection state:', peerConnection.connectionState)
-  
-  if (peerConnection.connectionState === 'connected') {
-    setIsConnected(true)
-    console.log('✅ WebRTC CONNECTED!')
-    
-    await supabase
-      .from('calls')
-      .update({ 
-        status: 'active',
-        started_at: new Date().toISOString()
-      })
-      .eq('id', callId)
-  } 
-  else if (peerConnection.connectionState === 'failed' || 
-           peerConnection.connectionState === 'disconnected') {
-    console.log('⚠️ Connection issues detected')
-    setIsConnected(false)
-    
-    // Don't immediately end call on disconnect - might be temporary
-    // Wait 5 seconds to see if it reconnects
-    setTimeout(async () => {
-      if (peerConnection.connectionState === 'disconnected' || 
-          peerConnection.connectionState === 'failed') {
-        console.log('❌ Partner permanently disconnected')
-        
-        // Only update if call is still active
-        const { data: currentCall } = await supabase
-          .from('calls')
-          .select('status')
-          .eq('id', callId)
-          .single()
-        
-        if (currentCall?.status === 'active') {
-          await supabase
-            .from('calls')
-            .update({ 
-              status: 'ended',
-              ended_at: new Date().toISOString()
-            })
-            .eq('id', callId)
-        }
-      }
-    }, 5000)
-  }
-  else if (peerConnection.connectionState === 'closed') {
-    console.log('🔒 Connection closed')
-    setIsConnected(false)
-  }
-}
-
-      peerConnection.oniceconnectionstatechange = () => {
-        console.log('🧊 ICE Connection state:', peerConnection.iceConnectionState)
-      }
-
-      // Try realtime first
-      console.log('👂 Attempting realtime subscription...')
-      const channel = supabase
-        .channel(`call-${callId}-${userId}`)
-        .on(
-          'postgres_changes' as any,
-          {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'webrtc_signals',
-            filter: `receiver_id=eq.${userId}`,
-          },
-          async (payload: any) => {
-            console.log('📨 Received signal via realtime:', payload.new?.signal_type)
-            await handleSignal(payload.new, peerConnection)
-          }
-        )
-        .subscribe((status) => {
-          console.log('📡 Subscription status:', status)
-          
-          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-            console.log('⚠️ Realtime failed, switching to polling')
-            startPolling(callId, userId, peerConnection)
-          } else if (status === 'SUBSCRIBED') {
-            console.log('✅ Realtime working!')
-          }
-        })
-
-      channelRef.current = channel
-
-      setTimeout(() => {
-        if (channelRef.current?.state !== 'joined') {
-          console.log('🔄 Starting polling backup')
-          startPolling(callId, userId, peerConnection)
-        }
-      }, 3000)
-
-      await new Promise(resolve => setTimeout(resolve, 1000))
-
-      console.log('🔍 Checking for existing signals...')
-      const { data: existingSignals } = await supabase
-        .from('webrtc_signals')
-        .select('*')
-        .eq('call_id', callId)
-        .eq('receiver_id', userId)
-        .order('created_at', { ascending: true })
-
-      if (existingSignals && existingSignals.length > 0) {
-        console.log(`📬 Found ${existingSignals.length} existing signals`)
-        for (const signal of existingSignals) {
-          await handleSignal(signal, peerConnection)
+      // 7. Handle connection state changes
+      peerConnection.onconnectionstatechange = () => {
+        console.log('🔌 Connection state:', peerConnection.connectionState)
+        if (peerConnection.connectionState === 'connected') {
+          setIsConnected(true)
+          console.log('✅ WebRTC connection established!')
+        } else if (peerConnection.connectionState === 'failed' || 
+                   peerConnection.connectionState === 'disconnected') {
+          console.log('❌ Connection failed or disconnected')
+          setIsConnected(false)
         }
       }
 
+      // 8. Start polling for signals
+      startPolling(callId, userId, peerConnection)
+      console.log('🔄 Started polling for WebRTC signals')
+
+      // 9. If initiator, create and send offer
       if (isInitiator) {
-        console.log('📤 Creating offer...')
-        const offer = await peerConnection.createOffer({
-          offerToReceiveAudio: true,
-        })
+        console.log('📞 Creating offer...')
+        const offer = await peerConnection.createOffer()
         await peerConnection.setLocalDescription(offer)
-        console.log('✅ Offer created')
         
         await supabase.from('webrtc_signals').insert({
           call_id: callId,
@@ -298,25 +220,25 @@ peerConnection.onconnectionstatechange = async () => {
           signal_data: offer,
         })
         console.log('📨 Offer sent')
-      } else {
-        console.log('👂 Receiver waiting for offer...')
       }
 
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Error initializing call:', error)
       
-      // Clean up on error
-      if (localStream) {
-        localStream.getTracks().forEach(track => {
-          track.stop()
-          track.enabled = false
-        })
-        setLocalStream(null)
+      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+        alert('Microphone permission denied. Please allow microphone access and refresh the page.')
+      } else if (error.name === 'NotFoundError') {
+        alert('No microphone found. Please connect a microphone and try again.')
+      } else {
+        alert('Failed to access microphone. Please check your browser settings.')
       }
+      
+      window.location.href = '/'
+      return
     }
   }
 
-  const startPolling = (callId: string, userId: string, peerConnection: RTCPeerConnection) => {
+  const startPolling = (callId: string, userId: string, peerConnection: RTCPeerConnection): void => {
     if (pollingIntervalRef.current) return
     
     console.log('🔄 Polling for signals every 1 second')
@@ -355,6 +277,8 @@ peerConnection.onconnectionstatechange = async () => {
       console.log('⏭️ Skipping duplicate signal:', signal.signal_type)
       return
     }
+    
+    processedSignalsRef.current.add(signalId)
     
     if (processedSignalsRef.current.size > 50) {
       const oldestSignals = Array.from(processedSignalsRef.current).slice(0, 25)
@@ -440,8 +364,9 @@ peerConnection.onconnectionstatechange = async () => {
   }
 
   const toggleMute = () => {
-    if (localStream) {
-      localStream.getAudioTracks().forEach((track) => {
+    const stream = localStreamRef.current
+    if (stream) {
+      stream.getAudioTracks().forEach((track) => {
         track.enabled = !track.enabled
       })
       setIsMuted(!isMuted)
@@ -449,7 +374,7 @@ peerConnection.onconnectionstatechange = async () => {
     }
   }
 
-  // MANUAL CLEANUP FUNCTION (can be called externally if needed)
+  // MANUAL CLEANUP FUNCTION
   const cleanup = () => {
     console.log('🧹 Manual cleanup triggered')
     
@@ -467,19 +392,23 @@ peerConnection.onconnectionstatechange = async () => {
       peerConnectionRef.current = null
     }
     
-    if (localStream) {
-      localStream.getTracks().forEach((track) => {
+    const currentLocal = localStreamRef.current
+    if (currentLocal) {
+      currentLocal.getTracks().forEach((track) => {
         track.stop()
         track.enabled = false
       })
       setLocalStream(null)
+      localStreamRef.current = null
     }
     
-    if (remoteStream) {
-      remoteStream.getTracks().forEach((track) => {
+    const currentRemote = remoteStreamRef.current
+    if (currentRemote) {
+      currentRemote.getTracks().forEach((track) => {
         track.stop()
       })
       setRemoteStream(null)
+      remoteStreamRef.current = null
     }
     
     if (channelRef.current) {
@@ -495,13 +424,20 @@ peerConnection.onconnectionstatechange = async () => {
     setIsConnected(false)
     setIsMuted(false)
   }
-
+  const stopPolling = () => {
+    if (pollingIntervalRef.current) {
+      console.log('⏹️ Stopping signal polling')
+      clearInterval(pollingIntervalRef.current)
+      pollingIntervalRef.current = null
+    }
+  }
   return {
     localStream,
     remoteStream,
     isConnected,
     isMuted,
     toggleMute,
-    cleanup, // Export cleanup function
+    cleanup,
+    stopPolling
   }
 }
