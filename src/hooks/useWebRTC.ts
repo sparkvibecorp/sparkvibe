@@ -331,7 +331,10 @@ export const useWebRTC = (
       return
     }
     
-    processedSignalsRef.current.add(signalId)
+    if (processedSignalsRef.current.size > 50) {
+      const oldestSignals = Array.from(processedSignalsRef.current).slice(0, 25)
+      oldestSignals.forEach(sig => processedSignalsRef.current.delete(sig))
+    }
   
     const signalData = signal.signal_data
     const signalType = signal.signal_type

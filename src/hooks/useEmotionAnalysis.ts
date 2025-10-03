@@ -18,17 +18,18 @@ export const useEmotionAnalysis = (audioStream: MediaStream | null) => {
     const dataArray = new Uint8Array(bufferLength)
 
     let lastUpdate = 0
-const detectEmotion = () => {
-  const now = Date.now()
-  if (now - lastUpdate < 100) { // Update max every 100ms
-    requestAnimationFrame(detectEmotion)
-    return
-  }
-  lastUpdate = now
-  
-  analyser.getByteFrequencyData(dataArray)
-      
+    let animationId: number | null = null
 
+    const detectEmotion = () => {
+      const now = Date.now()
+      if (now - lastUpdate < 100) {
+        animationId = requestAnimationFrame(detectEmotion)
+        return
+      }
+      lastUpdate = now
+      
+      analyser.getByteFrequencyData(dataArray)
+      
       // Calculate average amplitude
       const average = dataArray.reduce((a, b) => a + b, 0) / bufferLength
       
@@ -48,12 +49,16 @@ const detectEmotion = () => {
         setEmotion('contemplative')
       }
 
-      requestAnimationFrame(detectEmotion)
+      animationId = requestAnimationFrame(detectEmotion)
     }
 
     detectEmotion()
 
     return () => {
+      // CRITICAL FIX: Cancel the animation frame to prevent memory leak
+      if (animationId !== null) {
+        cancelAnimationFrame(animationId)
+      }
       source.disconnect()
       audioContext.close()
     }

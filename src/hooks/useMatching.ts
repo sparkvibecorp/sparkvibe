@@ -195,7 +195,8 @@ export const useMatching = (userId: string | undefined, duration: number) => {
           .neq('user_id', currentUserId)
           .order('created_at', { ascending: true })
           .limit(5) // Get up to 5 potential matches
-  
+          console.log('🔍 Found potential matches:', otherUsers?.length, otherUsers); // ADD THIS
+
         // Filter to only recently active users
         let otherUser = null
         if (otherUsers && otherUsers.length > 0) {

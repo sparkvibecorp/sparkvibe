@@ -18,9 +18,8 @@ export const useLiveStats = () => {
         if (error) throw error
 
         if (data && isMounted) {
-          // If your RPC returns a single object
-          setStats(data)
-          // If it actually returns an array with one object, use: setStats(data[0])
+          // RPC returns an array, take the first element
+          setStats(Array.isArray(data) ? data[0] : data)
         }
       } catch (err) {
         console.error('❌ Error fetching live stats:', err)
@@ -28,7 +27,7 @@ export const useLiveStats = () => {
     }
 
     fetchStats()
-    const interval = setInterval(fetchStats, 10000) // Update every 10 seconds
+    const interval = setInterval(fetchStats, 10000)
 
     return () => {
       isMounted = false

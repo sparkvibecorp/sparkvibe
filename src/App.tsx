@@ -63,34 +63,29 @@ const App = () => {
   const stats = useLiveStats();
 
   // loadQuestions must be defined before the useEffect that calls it
-  const loadQuestions = async () => {
+  const loadQuestions = useCallback(async () => {
     try {
       const { data, error } = await supabase
         .from('vulnerability_questions')
         .select('*')
         .eq('is_active', true);
-
+  
       if (error) {
         console.error('Failed to load vulnerability questions', error);
         return;
       }
-
+  
       if (data) setQuestions(data as VulnerabilityQuestion[]);
     } catch (err) {
       console.error('Error loading questions', err);
     }
-  };
+  }, []); // No dependencies needed
 
   const endCall = useCallback(async () => {
-    // Stop all media tracks
     try {
-      if (localStream) {
-        localStream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
-      }
-      if (remoteStream) {
-        remoteStream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
-      }
-
+      console.log('📞 Ending call...');
+      
+      // Update database first
       if (matchedCall?.id) {
         await supabase
           .from('calls')
@@ -100,14 +95,19 @@ const App = () => {
             status: 'ended',
           })
           .eq('id', matchedCall.id);
+        console.log('✅ Call status updated in database');
       }
-
+      
+      // Don't manually stop streams here - let useWebRTC cleanup handle it
+      // The screen change will trigger useWebRTC's useEffect cleanup
+      
+      console.log('📱 Changing to rating screen');
       setScreen('rating');
     } catch (err) {
-      console.error('Error ending call', err);
+      console.error('❌ Error ending call', err);
       setScreen('rating');
     }
-  }, [localStream, remoteStream, matchedCall?.id, callTimer]);
+  }, [matchedCall?.id, callTimer]); // Removed localStream, remoteStream dependencies
 
 // Timeout for auth loading
 useEffect(() => {
@@ -123,20 +123,18 @@ useEffect(() => {
 }, [authLoading]);
 
   useEffect(() => {
-    const handleBeforeUnload = async () => {
+    const handleBeforeUnload = () => {
       if (matchedCall?.id && screen === 'call') {
-        try {
-          await supabase
-            .from('calls')
-            .update({
-              status: 'ended',
-              ended_at: new Date().toISOString(),
-            })
-            .eq('id', matchedCall.id);
-        } catch (err) {
-          // best-effort
-          console.error('Error updating call on unload', err);
-        }
+        // Use sendBeacon for guaranteed delivery
+        const url = `${import.meta.env.VITE_SUPABASE_URL}/rest/v1/calls?id=eq.${matchedCall.id}`;
+        const payload = JSON.stringify({
+          status: 'ended',
+          ended_at: new Date().toISOString()
+        });
+        
+        navigator.sendBeacon(url, new Blob([payload], {
+          type: 'application/json'
+        }));
       }
     };
 
@@ -240,38 +238,42 @@ useEffect(() => {
   }, [matchedCall]);
 
   // Monitor partner disconnect
-  useEffect(() => {
-    if (!matchedCall?.id) return;
+// In your call screen useEffect
+useEffect(() => {
+  if (!matchedCall?.id) return;
 
-    const channel = supabase
-      .channel(`call-monitor-${matchedCall.id}`)
-      .on(
-        // supabase Realtime legacy channel event name - use as your SDK expects
-        'postgres_changes' as any,
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'calls',
-          filter: `id=eq.${matchedCall.id}`,
-        },
-        (payload: any) => {
-          console.log('📞 Call status changed:', payload.new.status);
-
-          if (payload.new.status === 'ended' && screen === 'call') {
-            console.log('🔚 Call ended by partner');
-            setScreen('rating');
+  const channel = supabase
+    .channel(`call-questions-${matchedCall.id}`)
+    .on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'call_questions',
+        filter: `call_id=eq.${matchedCall.id}`,
+      },
+      async (payload: any) => {
+        // Only show if partner spun it (not us)
+        if (payload.new.shown_by_user_id !== user?.id) {
+          const { data: questionData } = await supabase
+            .from('vulnerability_questions')
+            .select('*')
+            .eq('id', payload.new.question_id)
+            .single();
+          
+          if (questionData) {
+            setCurrentQuestion(questionData);
+            setTimeout(() => setCurrentQuestion(null), 15000);
           }
         }
-      )
-      .subscribe();
-
-    return () => {
-      if (channel && typeof channel.unsubscribe === 'function') {
-        // new supabase realtime returns RealtimeChannel - unsubscribe if available
-        channel.unsubscribe();
       }
-    };
-  }, [matchedCall?.id, screen]);
+    )
+    .subscribe();
+
+  return () => {
+    channel.unsubscribe();
+  };
+}, [matchedCall?.id, user?.id]);
 
   const handleStartMatching = () => {
     setScreen('waiting');
@@ -282,27 +284,24 @@ useEffect(() => {
     const weights = [0.5, 0.3, 0.2];
     const random = Math.random();
     let difficulty: string;
-
+  
     if (random < weights[0]) difficulty = 'light';
     else if (random < weights[0] + weights[1]) difficulty = 'medium';
     else difficulty = 'deep';
-
+  
     const filtered = questions.filter(q => q.difficulty === difficulty);
     const question = filtered[Math.floor(Math.random() * filtered.length)];
-
-    if (question) {
+  
+    if (question && matchedCall?.id && user?.id) {
+      // Insert into call_questions table - this will trigger realtime for partner
+      await supabase.from('call_questions').insert({
+        call_id: matchedCall.id,
+        question_id: question.id,
+        shown_by_user_id: user.id,
+      });
+  
+      // Show locally
       setCurrentQuestion(question);
-
-      if (matchedCall?.id && user?.id) {
-        supabase.rpc('track_question_used', {
-          p_question_id: question.id,
-          p_call_id: matchedCall.id,
-          p_user_id: user.id,
-        }).then(({ error }) => {
-          if (error) console.error('track_question_used rpc failed', error);
-        });
-      }
-
       setTimeout(() => setCurrentQuestion(null), 15000);
     }
   };
