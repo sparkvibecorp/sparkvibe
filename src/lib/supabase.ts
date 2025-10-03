@@ -7,13 +7,22 @@ if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables')
 }
 
+// Generate unique storage key per browser session/tab
+// This ensures each window gets its own anonymous user
+const sessionId = sessionStorage.getItem('sparkvibe_session_id') || 
+  `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+
+if (!sessionStorage.getItem('sparkvibe_session_id')) {
+  sessionStorage.setItem('sparkvibe_session_id', sessionId)
+}
+
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: true,
-    storage: window.localStorage, // Explicitly use localStorage
-    storageKey: 'sparkvibe-auth', // Custom storage key
-    flowType: 'implicit' // Better for anonymous auth
+    storage: window.sessionStorage, // Use sessionStorage instead of localStorage
+    storageKey: `sparkvibe-auth-${sessionId}`, // Unique key per session
+    flowType: 'implicit'
   }
 })

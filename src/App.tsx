@@ -81,33 +81,92 @@ const App = () => {
     }
   }, []); // No dependencies needed
 
-  const endCall = useCallback(async () => {
-    try {
-      console.log('📞 Ending call...');
+// Replace your endCall function in App.tsx with this:
+
+const endCall = useCallback(async () => {
+  try {
+    console.log('📞 Ending call...', { callId: matchedCall?.id, timer: callTimer });
+    
+    // Prevent multiple simultaneous end calls
+    if (screen !== 'call') {
+      console.log('⏭️ Already ending/ended call');
+      return;
+    }
+    
+    // Immediately change screen to prevent double-clicking
+    setScreen('rating');
+    
+    // Update database in background
+    if (matchedCall?.id) {
+      const { error } = await supabase
+        .from('calls')
+        .update({
+          ended_at: new Date().toISOString(),
+          duration_seconds: callTimer,
+          status: 'ended',
+        })
+        .eq('id', matchedCall.id);
       
-      // Update database first
-      if (matchedCall?.id) {
-        await supabase
-          .from('calls')
-          .update({
-            ended_at: new Date().toISOString(),
-            duration_seconds: callTimer,
-            status: 'ended',
-          })
-          .eq('id', matchedCall.id);
+      if (error) {
+        console.error('❌ Error updating call:', error);
+      } else {
         console.log('✅ Call status updated in database');
       }
       
-      // Don't manually stop streams here - let useWebRTC cleanup handle it
-      // The screen change will trigger useWebRTC's useEffect cleanup
-      
-      console.log('📱 Changing to rating screen');
-      setScreen('rating');
-    } catch (err) {
-      console.error('❌ Error ending call', err);
+      // Update user status
+      if (user?.id) {
+        await supabase
+          .from('users')
+          .update({ 
+            status: 'online',
+            current_call_id: null 
+          })
+          .eq('id', user.id);
+      }
+    }
+    
+    console.log('✅ Call ended successfully');
+  } catch (err) {
+    console.error('❌ Error ending call:', err);
+    // Make sure we still go to rating screen even on error
+    if (screen === 'call') {
       setScreen('rating');
     }
-  }, [matchedCall?.id, callTimer]); // Removed localStream, remoteStream dependencies
+  }
+}, [matchedCall?.id, callTimer, screen, user?.id]);
+
+// Also add this useEffect to handle partner disconnect
+useEffect(() => {
+  if (!matchedCall?.id || screen !== 'call') return;
+
+  console.log('👂 Monitoring partner disconnect for call:', matchedCall.id);
+
+  const channel = supabase
+    .channel(`call-status-${matchedCall.id}`)
+    .on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'calls',
+        filter: `id=eq.${matchedCall.id}`,
+      },
+      (payload: any) => {
+        console.log('📨 Call status changed:', payload.new.status);
+        
+        if (payload.new.status === 'ended' && screen === 'call') {
+          console.log('👋 Partner ended call or call completed');
+          setScreen('rating');
+        }
+      }
+    )
+    .subscribe();
+
+  return () => {
+    console.log('🧹 Unsubscribing from call status');
+    channel.unsubscribe();
+  };
+}, [matchedCall?.id, screen]);
 
 // Timeout for auth loading
 useEffect(() => {
@@ -308,26 +367,29 @@ useEffect(() => {
 
   const submitRating = async () => {
     try {
-      if (matchedCall?.id && user?.id) {
+      console.log('⭐ Submitting rating:', rating);
+      
+      if (matchedCall?.id && user?.id && rating > 0) {
         const isUser1 = matchedCall.user1_id === user.id;
         await supabase
           .from('calls')
           .update(isUser1 ? { rating_user1: rating } : { rating_user2: rating })
           .eq('id', matchedCall.id);
+        
+        console.log('✅ Rating submitted');
       }
     } catch (err) {
-      console.error('Failed to submit rating', err);
+      console.error('❌ Failed to submit rating', err);
     }
-
-    // Clean up streams if still active
-    if (localStream) {
-      localStream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
-    }
-    if (remoteStream) {
-      remoteStream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
-    }
-
+      // Clean up streams if still active
+      if (localStream) {
+        localStream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+      }
+      if (remoteStream) {
+        remoteStream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+      }
     // Reset all state
+    console.log('🔄 Resetting state...');
     setCallTimer(0);
     setSyncCount(0);
     setShowRoulette(false);
@@ -336,6 +398,8 @@ useEffect(() => {
     setDistance(0);
     setPartnerLocation('Unknown');
     setScreen('landing');
+    
+    console.log('✅ Reset complete');
   };
 
   // offline banner element to include in renders
@@ -588,7 +652,42 @@ if (authLoading) {
                   <p className="text-yellow-300 text-sm">Connecting...</p>
                 </div>
               )}
+// Add this near the top of your Call Screen, right after the connection status check:
 
+{/* Connection Status Banner */}
+{!isConnected && (
+  <div className="mb-4 bg-yellow-500/20 border-2 border-yellow-400 rounded-2xl p-4 text-center">
+    <div className="flex items-center justify-center gap-2 mb-2">
+      <div className="w-3 h-3 bg-yellow-400 rounded-full animate-pulse" />
+      <p className="text-yellow-200 font-bold">Connecting to partner...</p>
+    </div>
+    <p className="text-yellow-100 text-sm">
+      {callTimer > 10 ? 'Having trouble connecting?' : 'This usually takes a few seconds'}
+    </p>
+    {callTimer > 15 && (
+      <button
+        onClick={() => {
+          if (confirm('Connection is taking too long. Try again?')) {
+            window.location.reload()
+          }
+        }}
+        className="mt-2 text-yellow-300 underline text-sm hover:text-white"
+      >
+        Restart connection
+      </button>
+    )}
+  </div>
+)}
+
+{/* Connected Indicator */}
+{isConnected && (
+  <div className="mb-4 bg-green-500/20 border-2 border-green-400 rounded-2xl p-3 text-center animate-pulse">
+    <p className="text-green-200 font-bold flex items-center justify-center gap-2">
+      <span className="w-2 h-2 bg-green-400 rounded-full" />
+      Connected - Start talking!
+    </p>
+  </div>
+)}
               {/* Emotional Echo Visualization */}
               <div className="mb-6">
                 <h3 className="text-purple-200 text-sm font-medium mb-3 text-center flex items-center justify-center gap-2">

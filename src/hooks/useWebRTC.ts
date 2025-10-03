@@ -170,25 +170,43 @@ export const useWebRTC = (
         }
       }
 
-      peerConnection.onconnectionstatechange = async () => {
-        console.log('🔌 Connection state:', peerConnection.connectionState)
-        if (peerConnection.connectionState === 'connected') {
-          setIsConnected(true)
-          console.log('✅ WebRTC CONNECTED!')
-          
-          await supabase
-            .from('calls')
-            .update({ 
-              status: 'active',
-              started_at: new Date().toISOString()
-            })
-            .eq('id', callId)
-        } else if (peerConnection.connectionState === 'failed' || 
-                   peerConnection.connectionState === 'disconnected' ||
-                   peerConnection.connectionState === 'closed') {
-          console.log('❌ Partner disconnected')
-          setIsConnected(false)
-          
+// In useWebRTC.ts, update the onconnectionstatechange handler:
+
+peerConnection.onconnectionstatechange = async () => {
+  console.log('🔌 Connection state:', peerConnection.connectionState)
+  
+  if (peerConnection.connectionState === 'connected') {
+    setIsConnected(true)
+    console.log('✅ WebRTC CONNECTED!')
+    
+    await supabase
+      .from('calls')
+      .update({ 
+        status: 'active',
+        started_at: new Date().toISOString()
+      })
+      .eq('id', callId)
+  } 
+  else if (peerConnection.connectionState === 'failed' || 
+           peerConnection.connectionState === 'disconnected') {
+    console.log('⚠️ Connection issues detected')
+    setIsConnected(false)
+    
+    // Don't immediately end call on disconnect - might be temporary
+    // Wait 5 seconds to see if it reconnects
+    setTimeout(async () => {
+      if (peerConnection.connectionState === 'disconnected' || 
+          peerConnection.connectionState === 'failed') {
+        console.log('❌ Partner permanently disconnected')
+        
+        // Only update if call is still active
+        const { data: currentCall } = await supabase
+          .from('calls')
+          .select('status')
+          .eq('id', callId)
+          .single()
+        
+        if (currentCall?.status === 'active') {
           await supabase
             .from('calls')
             .update({ 
@@ -198,6 +216,13 @@ export const useWebRTC = (
             .eq('id', callId)
         }
       }
+    }, 5000)
+  }
+  else if (peerConnection.connectionState === 'closed') {
+    console.log('🔒 Connection closed')
+    setIsConnected(false)
+  }
+}
 
       peerConnection.oniceconnectionstatechange = () => {
         console.log('🧊 ICE Connection state:', peerConnection.iceConnectionState)
