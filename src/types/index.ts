@@ -360,7 +360,8 @@ export type VulnerabilityQuestion = Database['public']['Tables']['vulnerability_
 export type CallQuestion = Database['public']['Tables']['call_questions']['Row']
 export type WebRTCSignal = Database['public']['Tables']['webrtc_signals']['Row']
 
-export type EmotionType = 'excited' | 'calm' | 'happy' | 'contemplative'
+export type EmotionType = 'excited' | 'calm' | 'happy' | 'contemplative' | 'anxious' | 'sad' | 'angry'
+export type Emotion = EmotionType
 
 export interface LiveStats {
   active_users: number

@@ -1,386 +1,395 @@
-import { useState, useRef, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
-import type { Call } from '../types'
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { supabase } from '../lib/supabase';
+import type { Call } from '../types';
 
 export const useMatching = (userId: string | undefined, duration: number) => {
-  const [isSearching, setIsSearching] = useState(false)
-  const [matchedCall, setMatchedCall] = useState<Call | null>(null)
-  const [queueId, setQueueId] = useState<string | null>(null)
-  const channelRef = useRef<any>(null)
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
-  const isMatchingRef = useRef(false)
-  const hasMatchedRef = useRef(false)
+  const [matchedCall, setMatchedCall] = useState<Call | null>(null);
+  const [isMatching, setIsMatching] = useState(false);
+  
+  const matchingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const queueEntryIdRef = useRef<string | null>(null);
+  const matchAttemptRef = useRef(0);
+  const hasMatchedRef = useRef(false);
+  const isMountedRef = useRef(true);
+  const isProcessingRef = useRef(false); // NEW: Prevent concurrent processing
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      console.log('🧹 useMatching cleanup')
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current)
-      }
-      if (channelRef.current) {
-        channelRef.current.unsubscribe()
-      }
-    }
-  }, [])
-
-  const startMatching = async () => {
-    if (!userId || isMatchingRef.current || hasMatchedRef.current) {
-      console.log('⚠️ Cannot start matching:', { 
-        userId, 
-        isMatching: isMatchingRef.current,
-        hasMatched: hasMatchedRef.current 
-      })
-      return
-    }
+  const cleanup = useCallback(async () => {
+    console.log('Cleaning up matching...');
     
-    console.log('🔍 Starting matching process for user:', userId, 'duration:', duration)
-    setIsSearching(true)
-    isMatchingRef.current = true
-    hasMatchedRef.current = false
+    if (matchingIntervalRef.current) {
+      clearInterval(matchingIntervalRef.current);
+      matchingIntervalRef.current = null;
+    }
+  
+    if (queueEntryIdRef.current && userId) {
+      try {
+        await supabase
+          .from('call_queue')
+          .delete()
+          .eq('id', queueEntryIdRef.current);
+        console.log('Removed from queue');
+      } catch (err) {
+        console.error('Error removing from queue:', err);
+      }
+      queueEntryIdRef.current = null;
+    }
+  
+    matchAttemptRef.current = 0;
+    hasMatchedRef.current = false;
+    isProcessingRef.current = false;
+    
+    if (isMountedRef.current) {
+      setIsMatching(false);
+    }
+  }, [userId]);
+
+  const handleQueueUpdate = useCallback((payload: any) => {
+    if (!isMountedRef.current || hasMatchedRef.current) return;
+
+    console.log('Queue update:', payload.new.status);
+
+    if (payload.new.status === 'matched' && payload.new.matched_with) {
+      hasMatchedRef.current = true;
+      console.log('Match found via realtime! Matched with:', payload.new.matched_with);
+      
+      if (matchingIntervalRef.current) {
+        clearInterval(matchingIntervalRef.current);
+        matchingIntervalRef.current = null;
+      }
+
+      supabase
+        .from('calls')
+        .select('*')
+        .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
+        .in('status', ['active', 'connecting'])
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single()
+        .then(({ data, error }) => {
+          if (error) {
+            console.error('Error fetching call:', error);
+            return;
+          }
+          
+          if (data && isMountedRef.current) {
+            console.log('Call details loaded:', data);
+            setMatchedCall(data);
+            setIsMatching(false);
+          }
+        });
+    }
+  }, [userId]);
+
+  const attemptMatch = useCallback(async () => {
+    // Guard: Already matched or processing
+    if (!userId || hasMatchedRef.current || isProcessingRef.current) {
+      return;
+    }
+
+    // Set processing flag to block concurrent attempts
+    isProcessingRef.current = true;
+  
+    matchAttemptRef.current += 1;
+    console.log('Match attempt #' + matchAttemptRef.current);
   
     try {
-      // Only clean up OUR old entries and truly stale ones (5+ minutes old)
-      console.log('🧹 Cleaning stale queue entries...')
-      await supabase
+      // Check again after async boundary
+      if (hasMatchedRef.current) {
+        isProcessingRef.current = false;
+        return;
+      }
+
+      const { data: waitingUsers, error: fetchError } = await supabase
         .from('call_queue')
-        .delete()
-        .or(`user_id.eq.${userId},created_at.lt.${new Date(Date.now() - 5 * 60 * 1000).toISOString()}`)
-      
-      await new Promise(resolve => setTimeout(resolve, 300))
+        .select('*')
+        .eq('status', 'waiting')
+        .eq('duration', duration)
+        .neq('user_id', userId)
+        .order('created_at', { ascending: true })
+        .limit(1);
   
-      // Insert into queue
-      console.log('➕ Inserting into queue...')
+      if (fetchError) {
+        console.error('Error fetching queue:', fetchError);
+        isProcessingRef.current = false;
+        return;
+      }
+  
+      console.log('Found waiting users:', waitingUsers?.length || 0);
+  
+      // No waiting users - check if someone created a call for us
+      if (!waitingUsers || waitingUsers.length === 0) {
+        const recentTime = new Date(Date.now() - 30000).toISOString();
+        
+        const { data: existingCall } = await supabase
+          .from('calls')
+          .select('*')
+          .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
+          .in('status', ['active', 'connecting'])
+          .gte('created_at', recentTime)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+          
+        if (existingCall && !hasMatchedRef.current) {
+          console.log('Found call created for us:', existingCall.id);
+          hasMatchedRef.current = true;
+          
+          setMatchedCall(existingCall);
+          setIsMatching(false);
+          
+          if (matchingIntervalRef.current) {
+            clearInterval(matchingIntervalRef.current);
+            matchingIntervalRef.current = null;
+          }
+          
+          const partnerId = existingCall.user1_id === userId ? existingCall.user2_id : existingCall.user1_id;
+          
+          await supabase
+            .from('call_queue')
+            .update({ 
+              status: 'matched', 
+              matched_with: partnerId,
+              matched_at: new Date().toISOString()
+            })
+            .eq('user_id', userId);
+        }
+        
+        isProcessingRef.current = false;
+        return;
+      }
+  
+      const partner = waitingUsers[0];
+      const shouldCreateCall = userId < partner.user_id;
+      
+      if (!shouldCreateCall) {
+        console.log('Partner will create call, waiting...');
+        
+        const recentTime = new Date(Date.now() - 30000).toISOString();
+        
+        const { data: existingCall } = await supabase
+          .from('calls')
+          .select('*')
+          .eq('user1_id', partner.user_id)
+          .eq('user2_id', userId)
+          .in('status', ['active', 'connecting'])
+          .gte('created_at', recentTime)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+          
+        if (existingCall && !hasMatchedRef.current) {
+          console.log('Found call created by partner:', existingCall.id);
+          hasMatchedRef.current = true;
+          
+          setMatchedCall(existingCall);
+          setIsMatching(false);
+          
+          if (matchingIntervalRef.current) {
+            clearInterval(matchingIntervalRef.current);
+            matchingIntervalRef.current = null;
+          }
+          
+          await supabase
+            .from('call_queue')
+            .update({ 
+              status: 'matched', 
+              matched_with: partner.user_id,
+              matched_at: new Date().toISOString()
+            })
+            .eq('id', queueEntryIdRef.current!);
+        }
+        
+        isProcessingRef.current = false;
+        return;
+      }
+      
+      // Final check before creating call
+      if (hasMatchedRef.current) {
+        isProcessingRef.current = false;
+        return;
+      }
+
+      const { data: partnerCheck } = await supabase
+        .from('call_queue')
+        .select('status')
+        .eq('id', partner.id)
+        .single();
+  
+      if (partnerCheck?.status !== 'waiting') {
+        console.log('Partner no longer available');
+        isProcessingRef.current = false;
+        return;
+      }
+  
+      hasMatchedRef.current = true;
+      console.log('Creating match with:', partner.user_id);
+  
+      const { data: newCall, error: callError } = await supabase
+        .from('calls')
+        .insert({
+          user1_id: userId,
+          user2_id: partner.user_id,
+          planned_duration: duration,
+          status: 'active',
+          started_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+  
+      if (callError) {
+        console.error('Error creating call:', callError);
+        hasMatchedRef.current = false;
+        isProcessingRef.current = false;
+        return;
+      }
+  
+      console.log('Call created:', newCall.id);
+  
+      const updatePromises = [
+        supabase.from('call_queue').update({ 
+          status: 'matched', 
+          matched_with: partner.user_id,
+          matched_at: new Date().toISOString()
+        }).eq('id', queueEntryIdRef.current!),
+        supabase.from('call_queue').update({ 
+          status: 'matched', 
+          matched_with: userId,
+          matched_at: new Date().toISOString()
+        }).eq('id', partner.id),
+        supabase.from('users').update({ 
+          status: 'in_call', 
+          current_call_id: newCall.id 
+        }).eq('id', userId),
+        supabase.from('users').update({ 
+          status: 'in_call', 
+          current_call_id: newCall.id 
+        }).eq('id', partner.user_id),
+      ];
+  
+      await Promise.allSettled(updatePromises);
+      console.log('Queue and user statuses updated');
+  
+      setMatchedCall(newCall);
+      setIsMatching(false);
+  
+      if (matchingIntervalRef.current) {
+        clearInterval(matchingIntervalRef.current);
+        matchingIntervalRef.current = null;
+      }
+      
+      isProcessingRef.current = false;
+    } catch (err: any) {
+      console.error('Match attempt failed:', err);
+      isProcessingRef.current = false;
+      
+      if (err.code === '23505' || err.message?.includes('duplicate')) {
+        console.log('Race condition detected, resetting...');
+        hasMatchedRef.current = false;
+      }
+    }
+  }, [userId, duration]);
+
+  const startMatching = useCallback(async () => {
+    if (!userId || isMatching || hasMatchedRef.current) {
+      console.log('Already matching or matched');
+      return;
+    }
+
+    console.log('Starting matching:', { userId, duration });
+
+    try {
+      setIsMatching(true);
+      hasMatchedRef.current = false;
+      isProcessingRef.current = false;
+      matchAttemptRef.current = 0;
+
+      console.log('Cleaning up old queue entries...');
+      await supabase.from('call_queue').delete().eq('user_id', userId);
+
+      console.log('Updating user status to in_queue...');
+      await supabase.from('users').update({ status: 'in_queue' }).eq('id', userId);
+
+      const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+      console.log('Adding to queue...');
+      
       const { data: queueEntry, error: queueError } = await supabase
         .from('call_queue')
         .insert({
           user_id: userId,
           duration: duration,
-          language: 'en',
           status: 'waiting',
+          expires_at: expiresAt.toISOString(),
         })
         .select()
-        .single()
-  
+        .single();
+
       if (queueError) {
-        console.error('❌ Queue error:', queueError)
-        throw queueError
+        console.error('Queue insert error:', queueError);
+        throw queueError;
       }
-      
-      console.log('✅ Added to queue:', queueEntry.id)
-      setQueueId(queueEntry.id)
-  
-      // Start matching process
-      await pollAndMatch(queueEntry.id, userId)
-    } catch (error) {
-      console.error('❌ Error starting match:', error)
-      setIsSearching(false)
-      isMatchingRef.current = false
-      hasMatchedRef.current = false
-    }
-  }
-  
-  const pollAndMatch = async (queueEntryId: string, currentUserId: string) => {
-    console.log('🔄 Starting poll and match for:', queueEntryId)
-    
-    // Subscribe to changes on our queue entry
-    const channel = supabase
-      .channel(`queue-${queueEntryId}`)
-      .on(
-        'postgres_changes',
-        {
+
+      queueEntryIdRef.current = queueEntry.id;
+      console.log('Added to queue:', queueEntry.id);
+
+      const channel = supabase
+        .channel(`queue-${queueEntry.id}`)
+        .on('postgres_changes', {
           event: 'UPDATE',
           schema: 'public',
           table: 'call_queue',
-          filter: `id=eq.${queueEntryId}`
-        },
-        async (payload) => {
-          console.log('📨 Queue update received:', payload.new)
-          
-          if (payload.new.status === 'matched' && !hasMatchedRef.current) {
-            hasMatchedRef.current = true
-            console.log('🎉 We were matched! Partner:', payload.new.matched_with)
-            
-            // Stop polling
-            if (pollIntervalRef.current) {
-              clearInterval(pollIntervalRef.current)
-              pollIntervalRef.current = null
-            }
-            
-            // Unsubscribe
-            channel.unsubscribe()
-            
-            // Wait for call to be created
-            await findAndSetCall(currentUserId)
-          }
-        }
-      )
-      .subscribe()
-  
-    channelRef.current = channel
-  
-    // Poll to actively find matches
-    let attemptCount = 0
-    pollIntervalRef.current = setInterval(async () => {
-      if (hasMatchedRef.current) {
-        console.log('⏹️ Already matched, stopping poll')
-        if (pollIntervalRef.current) {
-          clearInterval(pollIntervalRef.current)
-          pollIntervalRef.current = null
-        }
-        return
-      }
+          filter: `id=eq.${queueEntry.id}`,
+        }, handleQueueUpdate)
+        .subscribe((status) => {
+          console.log('Realtime subscription status:', status);
+        });
 
-      attemptCount++
-      console.log(`🔍 Polling attempt #${attemptCount}`)
+      console.log('Starting match polling...');
+      matchingIntervalRef.current = setInterval(attemptMatch, 2000);
       
-      try {
-        // Check if we're still in queue
-        const { data: ourEntry } = await supabase
-          .from('call_queue')
-          .select('status, matched_with')
-          .eq('id', queueEntryId)
-          .single()
-        
-        console.log('📋 Our queue status:', ourEntry?.status)
-        
-        if (!ourEntry || ourEntry.status === 'cancelled') {
-          console.log('⏹️ No longer in queue, stopping poll')
-          if (pollIntervalRef.current) {
-            clearInterval(pollIntervalRef.current)
-            pollIntervalRef.current = null
-          }
-          return
-        }
-        
-        if (ourEntry.status === 'matched' && !hasMatchedRef.current) {
-          hasMatchedRef.current = true
-          console.log('🎉 Found matched status via polling!')
-          
-          if (pollIntervalRef.current) {
-            clearInterval(pollIntervalRef.current)
-            pollIntervalRef.current = null
-          }
-          
-          await findAndSetCall(currentUserId)
-          return
-        }
-        
-        if (ourEntry.status !== 'waiting') return
-        
-        // Try to find a match using a transaction-like approach
-        await tryCreateMatch(queueEntryId, currentUserId, duration)
-        
-      } catch (error) {
-        console.error('❌ Polling error:', error)
-      }
-    }, 2000)
-  
-    // Timeout after 3 minutes
-    setTimeout(() => {
-      if (!hasMatchedRef.current) {
-        console.log('⏰ Matching timeout')
+      console.log('Attempting immediate match...');
+      attemptMatch();
 
-        if (queueEntryId) {
-          supabase
-            .from('call_queue')
-            .update({ status: 'expired' })
-            .eq('id', queueEntryId)
-            .then(() => console.log('✅ Queue entry marked as expired'));
-        }
-
-        cancelMatching()
+      return () => {
+        channel.unsubscribe();
+      };
+    } catch (err) {
+      console.error('Error starting match:', err);
+      if (isMountedRef.current) {
+        setIsMatching(false);
       }
-    }, 180000)
-  }
-
-  const tryCreateMatch = async (
-    ourQueueId: string, 
-    currentUserId: string, 
-    duration: number
-  ) => {
-    try {
-      // Look for someone to match with - use SELECT FOR UPDATE for proper locking
-      const { data: potentialMatches } = await supabase
-        .from('call_queue')
-        .select('*')
-        .eq('status', 'waiting')
-        .eq('duration', duration)
-        .neq('user_id', currentUserId)
-        .order('created_at', { ascending: true })
-        .limit(1) // Only get one match at a time
-  
-      console.log('🔍 Found potential matches:', potentialMatches?.length)
-  
-      if (!potentialMatches || potentialMatches.length === 0) {
-        return
-      }
-  
-      const matchedUser = potentialMatches[0]
-  
-      // Verify user is still active
-      const { data: userData } = await supabase
-        .from('users')
-        .select('last_active, status')
-        .eq('id', matchedUser.user_id)
-        .single()
-      
-      const isActive = userData && 
-        new Date(userData.last_active) > new Date(Date.now() - 120000) &&
-        userData.status !== 'in_call'
-      
-      if (!isActive) {
-        console.log('⏭️ User inactive, cleaning up')
-        await supabase.from('call_queue').delete().eq('id', matchedUser.id)
-        return
-      }
-  
-      if (!hasMatchedRef.current) {
-        hasMatchedRef.current = true
-        console.log('👥 Attempting to create match with:', matchedUser.user_id)
-        
-        // Stop polling immediately
-        if (pollIntervalRef.current) {
-          clearInterval(pollIntervalRef.current)
-          pollIntervalRef.current = null
-        }
-  
-        // Create call first
-        const { data: newCall, error: callError } = await supabase
-          .from('calls')
-          .insert({
-            user1_id: currentUserId,
-            user2_id: matchedUser.user_id,
-            planned_duration: duration,
-            status: 'connecting'
-          })
-          .select()
-          .single()
-  
-        if (callError) {
-          console.error('❌ Error creating call:', callError)
-          hasMatchedRef.current = false
-          return
-        }
-        
-        console.log('✅ Call created:', newCall.id)
-  
-        // Update both queue entries
-        await Promise.all([
-          supabase
-            .from('call_queue')
-            .update({ 
-              status: 'matched', 
-              matched_with: matchedUser.user_id,
-              matched_at: new Date().toISOString()
-            })
-            .eq('id', ourQueueId),
-          
-          supabase
-            .from('call_queue')
-            .update({ 
-              status: 'matched', 
-              matched_with: currentUserId,
-              matched_at: new Date().toISOString()
-            })
-            .eq('id', matchedUser.id)
-        ])
-  
-        console.log('✅ Queue entries updated')
-  
-        // Set matched call
-        setMatchedCall(newCall)
-        setIsSearching(false)
-        isMatchingRef.current = false
-      }
-    } catch (error) {
-      console.error('❌ Error in tryCreateMatch:', error)
-      hasMatchedRef.current = false
+      cleanup();
     }
-  }
+  }, [userId, duration, isMatching, attemptMatch, handleQueueUpdate, cleanup]);
 
-  const findAndSetCall = async (currentUserId: string) => {
-    // Wait a moment for database to sync
-    await new Promise(resolve => setTimeout(resolve, 500))
+  const cancelMatching = useCallback(async () => {
+    console.log('Canceling matching');
+    setIsMatching(false);
+    setMatchedCall(null); // ADD THIS LINE - it's missing!
     
-    console.log('🔍 Looking for call...')
-    const { data: existingCall, error: callError } = await supabase
-      .from('calls')
-      .select('*')
-      .or(`user1_id.eq.${currentUserId},user2_id.eq.${currentUserId}`)
-      .eq('status', 'connecting')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single()
-
-    if (callError) {
-      console.error('❌ Error finding call:', callError)
-      // Try one more time after delay
-      await new Promise(resolve => setTimeout(resolve, 1000))
-      
-      const { data: retryCall } = await supabase
-        .from('calls')
-        .select('*')
-        .or(`user1_id.eq.${currentUserId},user2_id.eq.${currentUserId}`)
-        .eq('status', 'connecting')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single()
-      
-      if (retryCall) {
-        console.log('📞 Found call on retry:', retryCall.id)
-        setMatchedCall(retryCall)
-        setIsSearching(false)
-        isMatchingRef.current = false
-      } else {
-        console.error('❌ Still no call found')
-        setIsSearching(false)
-        isMatchingRef.current = false
-        hasMatchedRef.current = false
-      }
-      return
+    if (userId) {
+      await supabase.from('call_queue').delete().eq('user_id', userId);
+      await supabase.from('users').update({ 
+        status: 'online', 
+        current_call_id: null 
+      }).eq('id', userId);
     }
     
-    if (existingCall) {
-      console.log('📞 Found call:', existingCall.id)
-      setMatchedCall(existingCall)
-      setIsSearching(false)
-      isMatchingRef.current = false
-    }
-  }
+    cleanup();
+  }, [userId, cleanup]);
 
-  const cancelMatching = async () => {
-    console.log('❌ Cancelling match')
-    
-    if (!queueId) return
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+      cleanup();
+    };
+  }, [cleanup]);
 
-    try {
-      // Stop polling
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current)
-        pollIntervalRef.current = null
-      }
-      
-      // Unsubscribe from queue changes
-      if (channelRef.current) {
-        channelRef.current.unsubscribe()
-        channelRef.current = null
-      }
+  console.log('useMatching state:', { matchedCallId: matchedCall?.id, isMatching });
 
-      // Update queue status
-      await supabase
-        .from('call_queue')
-        .update({ status: 'cancelled' })
-        .eq('id', queueId)
-      
-      setIsSearching(false)
-      setQueueId(null)
-      isMatchingRef.current = false
-      hasMatchedRef.current = false
-    } catch (error) {
-      console.error('❌ Error cancelling match:', error)
-    }
-  }
-
-  return { isSearching, matchedCall, startMatching, cancelMatching }
-}
+  return {
+    matchedCall,
+    isMatching,
+    startMatching,
+    cancelMatching,
+  };
+};

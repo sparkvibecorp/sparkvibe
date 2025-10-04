@@ -1,4 +1,4 @@
-// ErrorBoundary.tsx
+// @ts-ignore
 import { Component, ErrorInfo, ReactNode } from "react";
 
 interface Props {
@@ -14,20 +14,14 @@ class ErrorBoundary extends Component<Props, State> {
     hasError: false,
   };
 
-  // React lifecycle: update state when error is caught
   public static getDerivedStateFromError(): State {
     return { hasError: true };
   }
 
-  // Catch errors and log them
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error("Uncaught error:", error, errorInfo);
-
-    // Example: Hook into an external logging/monitoring service
-    // Sentry.captureException(error, { extra: errorInfo });
   }
 
-  // Reset without reloading the full page
   private resetError = () => {
     this.setState({ hasError: false });
   };

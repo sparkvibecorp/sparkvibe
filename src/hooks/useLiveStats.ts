@@ -18,7 +18,6 @@ export const useLiveStats = () => {
         if (error) throw error
 
         if (data && isMounted) {
-          // RPC returns an array, take the first element
           setStats(Array.isArray(data) ? data[0] : data)
         }
       } catch (err) {
