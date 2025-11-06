@@ -43,35 +43,36 @@ export default function VibeMatch() {
   }, []);
 
   // Token fetch — same room for same vibe
-  useEffect(() => {
-    if (progress >= 100 && status === 'searching') {
-      (async () => {
-        setStatus('connecting');
-        console.log('=== JOINING VIBE ROOM ===', vibe);
+// Token fetch — SAME ROOM for SAME VIBE
+useEffect(() => {
+  if (progress >= 100 && status === 'searching') {
+    (async () => {
+      setStatus('connecting');
+      console.log('=== JOINING VIBE ROOM ===', vibe);
 
-        try {
-          const { data, error } = await supabase.functions.invoke('get-livekit-token', {
-            body: { room: `vibe-${vibe}` }, // All same vibe → same room
-          });
+      try {
+        const { data, error } = await supabase.functions.invoke('get-livekit-token', {
+          body: { room: `vibe-${vibe}` }, // ← SAME ROOM FOR ALL
+        });
 
-          console.log('Token response:', { data, error });
+        console.log('Token response:', { data, error });
 
-          if (error || !data?.token) {
-            alert('Failed to connect. Try again.');
-            navigate('/');
-            return;
-          }
-
-          setToken(data.token);
-          setTimeout(() => setStatus('in-call'), 800);
-        } catch (err) {
-          console.error('Network error:', err);
-          alert('Connection failed');
+        if (error || !data?.token) {
+          alert('Failed to connect. Try again.');
           navigate('/');
+          return;
         }
-      })();
-    }
-  }, [progress, status, vibe, navigate]);
+
+        setToken(data.token);
+        setTimeout(() => setStatus('in-call'), 800);
+      } catch (err) {
+        console.error('Network error:', err);
+        alert('Connection failed');
+        navigate('/');
+      }
+    })();
+  }
+}, [progress, status, vibe, navigate]);
 
   // SEARCH / CONNECTING
   if (status !== 'in-call') {
