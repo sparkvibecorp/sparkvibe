@@ -56,7 +56,7 @@ export default function Onboarding() {
 
         <Button
           variant="primary"
-          onClick={() => selected && navigate('/match')}
+          onClick={() => selected && navigate(`/match?vibe=${selected}`)}
           disabled={!selected}
           className="w-full"
         >
