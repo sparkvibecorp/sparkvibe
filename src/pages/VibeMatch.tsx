@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import Button from '../components/Button';
-import { Mic, MicOff, PhoneOff, User, Volume2 } from 'lucide-react';
+import { PhoneOff, User, Volume2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { LiveKitRoom, DisconnectButton } from '@livekit/components-react';
 import '@livekit/components-styles';
@@ -23,8 +23,10 @@ export default function VibeMatch() {
   const params = new URLSearchParams(location.search);
   const vibe = params.get('vibe') || 'default';
 
-  // Resume AudioContext
-  const resumeAudio = () => setAudioReady(true);
+  // Resume AudioContext on tap
+  const resumeAudio = () => {
+    setAudioReady(true);
+  };
 
   // Progress bar
   useEffect(() => {
@@ -32,7 +34,7 @@ export default function VibeMatch() {
     setStatus('searching');
 
     const interval = setInterval(() => {
-      setProgress(prev => {
+      setProgress((prev) => {
         const next = Math.min(100, prev + 6);
         console.log('Progress:', next);
         return next;
@@ -42,37 +44,36 @@ export default function VibeMatch() {
     return () => clearInterval(interval);
   }, []);
 
-  // Token fetch — same room for same vibe
-// Token fetch — SAME ROOM for SAME VIBE
-useEffect(() => {
-  if (progress >= 100 && status === 'searching') {
-    (async () => {
-      setStatus('connecting');
-      console.log('=== JOINING VIBE ROOM ===', vibe);
+  // Token fetch — SAME ROOM for SAME VIBE
+  useEffect(() => {
+    if (progress >= 100 && status === 'searching') {
+      (async () => {
+        setStatus('connecting');
+        console.log('=== JOINING VIBE ROOM ===', vibe);
 
-      try {
-        const { data, error } = await supabase.functions.invoke('get-livekit-token', {
-          body: { room: `vibe-${vibe}` }, // ← SAME ROOM FOR ALL
-        });
+        try {
+          const { data, error } = await supabase.functions.invoke('get-livekit-token', {
+            body: { room: `vibe-${vibe}` },
+          });
 
-        console.log('Token response:', { data, error });
+          console.log('Token response:', { data, error });
 
-        if (error || !data?.token) {
-          alert('Failed to connect. Try again.');
+          if (error || !data?.token) {
+            alert('Failed to connect. Try again.');
+            navigate('/');
+            return;
+          }
+
+          setToken(data.token);
+          setTimeout(() => setStatus('in-call'), 800);
+        } catch (err) {
+          console.error('Network error:', err);
+          alert('Connection failed');
           navigate('/');
-          return;
         }
-
-        setToken(data.token);
-        setTimeout(() => setStatus('in-call'), 800);
-      } catch (err) {
-        console.error('Network error:', err);
-        alert('Connection failed');
-        navigate('/');
-      }
-    })();
-  }
-}, [progress, status, vibe, navigate]);
+      })();
+    }
+  }, [progress, status, vibe, navigate]);
 
   // SEARCH / CONNECTING
   if (status !== 'in-call') {
@@ -110,8 +111,8 @@ useEffect(() => {
       video={false}
       className="min-h-screen bg-gray-900 flex flex-col"
     >
-      <div className="flex-1 flex flex-col items-center justify-center p-6">
-        {/* Tap to unmute */}
+      <div className="flex-1 flex flex-col items-center justify-center p-6 relative">
+        {/* TAP TO UNMUTE OVERLAY */}
         {!audioReady && (
           <motion.div
             initial={{ opacity: 0 }}
