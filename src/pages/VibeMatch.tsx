@@ -28,16 +28,31 @@ export default function VibeMatch() {
     if (progress >= 100) {
       setTimeout(async () => {
         setStatus('connecting');
-        const { data, error } = await supabase.functions.invoke('get-livekit-token', {
-          body: { room: `vibe-${Date.now()}` }, // Unique room per match
+        console.log('Fetching token from Supabase...');
+        console.log('Env vars:', {
+          SUPABASE_URL: import.meta.env.VITE_SUPABASE_URL,
+          LIVEKIT_URL: import.meta.env.VITE_LIVEKIT_URL,
         });
-        if (error || !data?.token) {
-          alert('Failed to connect. Please try again.');
+  
+        try {
+          const { data, error } = await supabase.functions.invoke('get-livekit-token', {
+            body: { room: `vibe-${Date.now()}` },
+          });
+          console.log('Function response:', { data, error });
+  
+          if (error || !data?.token) {
+            alert('Call failed: ' + (error?.message || 'No token'));
+            navigate('/');
+            return;
+          }
+  
+          setToken(data.token);
+          setTimeout(() => setStatus('in-call'), 800);
+        } catch (err) {
+          console.error('Invoke error:', err);
+          alert('Network error');
           navigate('/');
-          return;
         }
-        setToken(data.token);
-        setTimeout(() => setStatus('in-call'), 800);
       }, 600);
     }
   }, [progress, status, navigate]);
