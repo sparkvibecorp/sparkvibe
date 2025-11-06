@@ -1,69 +1,65 @@
-import { Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import Button from '../components/Button';
-import { Mic, Users, Zap } from 'lucide-react';
-import { InstallPWA } from '../components/InstallPWA';
-
-const steps = [
-  { Icon: Mic, title: 'Voice Check-In', desc: 'Share your vibe in 10 s.' },
-  { Icon: Users, title: 'Instant Match', desc: 'AI pairs you instantly.' },
-  { Icon: Zap, title: 'Spark Convo', desc: 'Anonymous voice chat.' },
-];
+import { Sparkles, Mic } from 'lucide-react';
+import { useAuth } from '../hooks/useAuth';
 
 export default function Landing() {
+  const navigate = useNavigate();
+  const { user, signIn, loading } = useAuth();
+
+  const handleStart = () => {
+    console.log('Button clicked', { user, loading });
+    if (user) {
+      navigate('/onboarding');
+    } else {
+      signIn();
+    }
+  };
+
   return (
-    <div className="min-h-screen flex flex-col bg-gray-900">
-      {/* Hero */}
-      <section className="flex-1 flex items-center justify-center px-4 py-16">
+    <div className="min-h-screen bg-gradient-to-b from-gray-900 to-gray-800 flex items-center justify-center px-4 py-8">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="text-center max-w-md"
+      >
+        {/* Logo */}
         <motion.div
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-center"
+          animate={{ rotate: 360 }}
+          transition={{ duration: 20, repeat: Infinity, ease: 'linear' }}
+          className="inline-flex items-center justify-center w-24 h-24 mb-8 rounded-full bg-gradient-to-br from-neonPurple to-neonCyan shadow-neon-glow"
         >
-          <motion.h1
-            animate={{ scale: [1, 1.05, 1] }}
-            transition={{ duration: 2, repeat: Infinity }}
-            className="text-6xl md:text-8xl font-bold neon-text mb-6"
-          >
-            Spark<span className="block">Vibe</span>
-          </motion.h1>
-          <p className="text-xl md:text-2xl text-gray-300 mb-8 max-w-2xl mx-auto">
-            Real-time voice matches based on mood. No swipes, just sparks.
-          </p>
-          <Link to="/onboarding">
-          <InstallPWA />
-            <Button variant="primary">Start Vibing</Button>
-          </Link>
+          <Sparkles className="w-12 h-12 text-white" />
         </motion.div>
-      </section>
 
-      {/* How it works */}
-      <section className="py-20 bg-gray-800/30">
-        <div className="max-w-6xl mx-auto px-4">
-          <h2 className="text-4xl font-bold text-center mb-16 neon-text">
-            How It Sparks
-          </h2>
-          <div className="grid md:grid-cols-3 gap-8">
-            {steps.map(({ Icon, title, desc }, i) => (
-              <motion.div
-                key={title}
-                initial={{ opacity: 0, y: 20 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.2 }}
-                className="text-center p-6 rounded-2xl bg-gray-900/50 neon-glow-hover"
-              >
-                <Icon className="w-12 h-12 mx-auto mb-4 text-neonPurple" />
-                <h3 className="text-xl font-semibold mb-2">{title}</h3>
-                <p className="text-gray-400">{desc}</p>
-              </motion.div>
-            ))}
-          </div>
+        <h1 className="text-5xl font-bold mb-4 bg-clip-text text-transparent bg-gradient-to-r from-neonPurple to-neonCyan">
+          SparkVibe
+        </h1>
+        <p className="text-xl text-gray-300 mb-8">
+          Match. Talk. Vibe. Instantly.
+        </p>
+
+        {/* Feature */}
+        <div className="flex items-center justify-center gap-2 text-gray-400 mb-12">
+          <Mic className="w-5 h-5" />
+          <span>Real-time voice calls</span>
         </div>
-      </section>
 
-      <footer className="py-8 text-center text-gray-500 text-sm">
-        © 2025 SparkVibe
-      </footer>
+        {/* Button */}
+        <Button
+          variant="primary"
+          onClick={handleStart}
+          disabled={loading}
+          className="w-full max-w-xs mx-auto"
+        >
+          {loading ? 'Loading...' : 'Start Vibing'}
+        </Button>
+
+        <p className="text-xs text-gray-500 mt-6">
+          By continuing, you agree to our Terms
+        </p>
+      </motion.div>
     </div>
   );
 }
