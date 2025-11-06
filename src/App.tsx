@@ -5,11 +5,7 @@ import Onboarding from './pages/Onboarding';
 import VibeMatch from './pages/VibeMatch';
 import './index.css';
 
-interface ProtectedRouteProps {
-  children: React.ReactElement;
-}
-
-function ProtectedRoute({ children }: ProtectedRouteProps) {
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
 
   if (loading) {
@@ -20,7 +16,7 @@ function ProtectedRoute({ children }: ProtectedRouteProps) {
     );
   }
 
-  return user ? children : <Navigate to="/" />;
+  return user ? <>{children}</> : <Navigate to="/" replace />;
 }
 
 export default function App() {

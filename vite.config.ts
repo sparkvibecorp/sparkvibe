@@ -7,40 +7,16 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      injectRegister: 'auto',
-      devOptions: { enabled: true },
       manifest: {
         name: 'SparkVibe',
-        short_name: 'SparkVibe',
-        description: 'Real-time voice mood matching',
-        theme_color: '#A020F0',
-        background_color: '#111827',
-        display: 'standalone',
-        scope: '/',
-        start_url: '/',
+        short_name: 'Vibe',
         icons: [
-          {
-            src: '/pwa-192x192.png',
-            sizes: '192x192',
-            type: 'image/png',
-          },
-          {
-            src: '/pwa-512x512.png',
-            sizes: '512x512',
-            type: 'image/png',
-            purpose: 'any maskable',
-          },
+          { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
         ],
-      },
-      workbox: {
-        globPatterns: ['**/*.{js,css,html,png,svg,woff2}'],
-        runtimeCaching: [
-          {
-            urlPattern: ({ request }) => request.destination === 'image',
-            handler: 'CacheFirst',
-            options: { cacheName: 'images', expiration: { maxEntries: 50 } },
-          },
-        ],
+        theme_color: '#1a1a1a',
+        background_color: '#1a1a1a',
+        display: 'standalone',
       },
     }),
   ],
