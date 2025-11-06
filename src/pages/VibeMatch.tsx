@@ -22,45 +22,51 @@ export default function VibeMatch() {
 
   // Simulate search → real Supabase token
   useEffect(() => {
-    if (status === 'searching') {
-      const id = setInterval(() => setProgress(p => Math.min(100, p + 6)), 300);
-      return () => clearInterval(id);
-    }
-    if (progress >= 100) {
-      setTimeout(async () => {
+    console.log('useEffect triggered', { status, progress });
+  
+    // Reset progress on mount
+    setProgress(0);
+    setStatus('searching');
+  
+    const interval = setInterval(() => {
+      setProgress(prev => {
+        const next = Math.min(100, prev + 6);
+        console.log('Progress:', next);
+        return next;
+      });
+    }, 300);
+  
+    return () => clearInterval(interval);
+  }, []); // ← Empty dependency = run once on mount
+  
+  // Second effect: Token fetch
+  useEffect(() => {
+    if (progress >= 100 && status === 'searching') {
+      (async () => {
         setStatus('connecting');
-        console.log('=== DEBUG: Starting token fetch ===');
-        console.log('Supabase URL:', import.meta.env.VITE_SUPABASE_URL);
-        console.log('LiveKit URL:', import.meta.env.VITE_LIVEKIT_URL);
+        console.log('=== TOKEN FETCH START ===');
   
         try {
           const { data, error } = await supabase.functions.invoke('get-livekit-token', {
             body: { room: `vibe-${Date.now()}` },
           });
-          console.log('=== DEBUG: Function response ===', { data, error });
   
-          if (error) {
-            console.error('Error details:', error);
-            alert(`Failed to connect: ${error.message || 'Unknown error'}`);
-            navigate('/');
-            return;
-          }
-          if (!data?.token) {
-            console.error('No token in response:', data);
-            alert('No token received from server');
+          console.log('Function response:', { data, error });
+  
+          if (error || !data?.token) {
+            alert('Failed to connect. Try again.');
             navigate('/');
             return;
           }
   
-          console.log('Token received:', data.token.substring(0, 20) + '...');
           setToken(data.token);
           setTimeout(() => setStatus('in-call'), 800);
         } catch (err) {
-          console.error('=== DEBUG: Catch error ===', err);
-          alert('Network error connecting to match');
+          console.error('Network error:', err);
+          alert('Connection failed');
           navigate('/');
         }
-      }, 600);
+      })();
     }
   }, [progress, status, navigate]);
 
