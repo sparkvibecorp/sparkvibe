@@ -5,9 +5,21 @@ import Onboarding from './pages/Onboarding';
 import VibeMatch from './pages/VibeMatch';
 import './index.css';
 
-function ProtectedRoute({ children }: { children: JSX.Element }) {
+interface ProtectedRouteProps {
+  children: React.ReactElement;
+}
+
+function ProtectedRoute({ children }: ProtectedRouteProps) {
   const { user, loading } = useAuth();
-  if (loading) return <div className="min-h-screen bg-gray-900" />;
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
+        <div className="text-white">Loading...</div>
+      </div>
+    );
+  }
+
   return user ? children : <Navigate to="/" />;
 }
 
