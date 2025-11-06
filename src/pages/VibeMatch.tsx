@@ -28,29 +28,35 @@ export default function VibeMatch() {
     if (progress >= 100) {
       setTimeout(async () => {
         setStatus('connecting');
-        console.log('Fetching token from Supabase...');
-        console.log('Env vars:', {
-          SUPABASE_URL: import.meta.env.VITE_SUPABASE_URL,
-          LIVEKIT_URL: import.meta.env.VITE_LIVEKIT_URL,
-        });
+        console.log('=== DEBUG: Starting token fetch ===');
+        console.log('Supabase URL:', import.meta.env.VITE_SUPABASE_URL);
+        console.log('LiveKit URL:', import.meta.env.VITE_LIVEKIT_URL);
   
         try {
           const { data, error } = await supabase.functions.invoke('get-livekit-token', {
             body: { room: `vibe-${Date.now()}` },
           });
-          console.log('Function response:', { data, error });
+          console.log('=== DEBUG: Function response ===', { data, error });
   
-          if (error || !data?.token) {
-            alert('Call failed: ' + (error?.message || 'No token'));
+          if (error) {
+            console.error('Error details:', error);
+            alert(`Failed to connect: ${error.message || 'Unknown error'}`);
+            navigate('/');
+            return;
+          }
+          if (!data?.token) {
+            console.error('No token in response:', data);
+            alert('No token received from server');
             navigate('/');
             return;
           }
   
+          console.log('Token received:', data.token.substring(0, 20) + '...');
           setToken(data.token);
           setTimeout(() => setStatus('in-call'), 800);
         } catch (err) {
-          console.error('Invoke error:', err);
-          alert('Network error');
+          console.error('=== DEBUG: Catch error ===', err);
+          alert('Network error connecting to match');
           navigate('/');
         }
       }, 600);
