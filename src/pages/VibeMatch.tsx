@@ -11,13 +11,12 @@ import '@livekit/components-styles';
 
 const LIVEKIT_URL = import.meta.env.VITE_LIVEKIT_URL;
 
-// Inner component that has access to LiveKit hooks
+// Inner Call UI
 function CallInterface({ onLeave }: { onLeave: () => void }) {
   const { localParticipant } = useLocalParticipant();
   const [isMuted, setIsMuted] = useState(false);
   const [audioReady, setAudioReady] = useState(false);
 
-  // Get remote audio tracks
   const remoteTracks = useTracks([Track.Source.Microphone], {
     onlySubscribed: true,
   });
@@ -30,19 +29,14 @@ function CallInterface({ onLeave }: { onLeave: () => void }) {
     }
   };
 
-  const resumeAudio = () => {
-    setAudioReady(true);
-  };
-
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-6 relative">
-      {/* TAP TO UNMUTE OVERLAY */}
       {!audioReady && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           className="absolute inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50"
-          onClick={resumeAudio}
+          onClick={() => setAudioReady(true)}
         >
           <div className="text-center text-white">
             <Volume2 className="w-12 h-12 mx-auto mb-4" />
@@ -51,7 +45,6 @@ function CallInterface({ onLeave }: { onLeave: () => void }) {
         </motion.div>
       )}
 
-      {/* Avatar */}
       <div className="relative w-32 h-32 mb-8">
         <motion.div
           animate={{ rotate: 360 }}
@@ -73,17 +66,14 @@ function CallInterface({ onLeave }: { onLeave: () => void }) {
         {remoteTracks.length > 0 ? "Connected! Say hi" : "Waiting for partner..."}
       </p>
       <p className="text-sm text-gray-500 mb-8">
-        {remoteTracks.length} participant{remoteTracks.length !== 1 ? 's' : ''} in call
+        {remoteTracks.length} participant{remoteTracks.length !== 1 ? 's' : ''}
       </p>
 
-      {/* Controls */}
       <div className="flex gap-4 items-center">
         <button
           onClick={toggleMute}
           className={`p-4 rounded-full transition-all ${
-            isMuted 
-              ? 'bg-gray-700 hover:bg-gray-600' 
-              : 'bg-neonPurple hover:bg-neonMagenta'
+            isMuted ? 'bg-gray-700 hover:bg-gray-600' : 'bg-neonPurple hover:bg-neonMagenta'
           } text-white shadow-neon-glow`}
         >
           {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
@@ -115,19 +105,19 @@ export default function VibeMatch() {
   const params = new URLSearchParams(location.search);
   const vibe = params.get('vibe') || 'default';
 
-  // === 2. PROFILE GUARANTEE HELPER ===
+  // === PROFILE GUARANTEE ===
   const upsertProfileIfMissing = async (uid: string) => {
     const { data, error } = await supabase
       .from('users')
       .select('id')
       .eq('id', uid)
       .maybeSingle();
-  
+
     if (error) {
       console.error('Profile check error:', error);
       return;
     }
-  
+
     if (!data) {
       const { data: authUser } = await supabase.auth.getUser();
       const { error: insertError } = await supabase
@@ -143,54 +133,47 @@ export default function VibeMatch() {
           },
           { onConflict: 'id' }
         );
-  
+
       if (insertError) {
-        console.error('Failed to create missing profile:', insertError);
+        console.error('Failed to create profile:', insertError);
       } else {
-        console.log('Created missing users row for', uid);
+        console.log('Created profile for', uid);
       }
     }
   };
 
-  // Progress bar animation
+  // Progress bar
   useEffect(() => {
     if (status !== 'searching') return;
-
     setProgress(0);
     const interval = setInterval(() => {
-      setProgress((prev) => Math.min(100, prev + 5));
+      setProgress((p) => Math.min(100, p + 5));
     }, 300);
-
     return () => clearInterval(interval);
   }, [status]);
 
-  // Matching logic
+  // === MATCHING LOGIC ===
   useEffect(() => {
     if (!user?.id || matchingRef.current) return;
     matchingRef.current = true;
 
     const findMatch = async () => {
       try {
-        console.log('Starting match search for vibe:', vibe);
+        console.log('Starting match for vibe:', vibe);
 
-        // === 1. GUARD: user.id must exist ===
         if (!user?.id) {
-          console.error('No user ID – cannot start matching');
-          setError('Authentication required. Please sign in again.');
+          setError('Please sign in again.');
           setStatus('error');
           return;
         }
 
-        // === 2. ENSURE PROFILE EXISTS BEFORE QUEUE INSERT ===
+        // 1. Ensure profile exists
         await upsertProfileIfMissing(user.id);
 
-        // Clean up old queue entries for this user
-        await supabase
-          .from('call_queue')
-          .delete()
-          .eq('user_id', user.id);
+        // 2. Clean old queue
+        await supabase.from('call_queue').delete().eq('user_id', user.id);
 
-        // Add user to queue
+        // 3. Insert into queue
         const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
         const { data: queueEntry, error: queueError } = await supabase
           .from('call_queue')
@@ -204,60 +187,48 @@ export default function VibeMatch() {
           .single();
 
         if (queueError) throw queueError;
-        console.log('Added to queue:', queueEntry.id);
+        console.log('In queue:', queueEntry.id);
 
-        // Update user status
-        await supabase
-          .from('users')
-          .update({ status: 'in_queue' })
-          .eq('id', user.id);
+        // 4. Update status
+        await supabase.from('users').update({ status: 'in_queue' }).eq('id', user.id);
 
-        // Poll for matches
-        const pollInterval = setInterval(async () => {
-          if (cleanupRef.current) {
-            clearInterval(pollInterval);
-            return;
-          }
+        // 5. Poll for match
+        const poll = setInterval(async () => {
+          if (cleanupRef.current) return clearInterval(poll);
 
           try {
-            // Look for waiting users with same vibe
-            const { data: waitingUsers } = await supabase
+            // Check if matched
+            const { data: matched } = await supabase
+              .from('call_queue')
+              .select('*, calls!inner(*)')
+              .eq('id', queueEntry.id)
+              .eq('status', 'matched')
+              .maybeSingle();
+
+            if (matched?.calls?.id) {
+              console.log('Match found! Call:', matched.calls.id);
+              clearInterval(poll);
+              await connectToCall(matched.calls.id);
+              return;
+            }
+
+            // Find partner
+            const { data: partners } = await supabase
               .from('call_queue')
               .select('*')
               .eq('status', 'waiting')
               .eq('duration', 5)
               .neq('user_id', user.id)
-              .order('created_at', { ascending: true })
+              .order('created_at')
               .limit(1);
 
-            if (!waitingUsers || waitingUsers.length === 0) {
-              // Check if someone matched with us
-              const { data: matched } = await supabase
-                .from('call_queue')
-                .select('*, calls!inner(*)')
-                .eq('id', queueEntry.id)
-                .eq('status', 'matched')
-                .maybeSingle();
+            if (!partners?.[0]) return;
 
-              if (matched) {
-                console.log('Found existing match!');
-                clearInterval(pollInterval);
-                await connectToCall(matched.calls.id);
-              }
-              return;
-            }
+            const partner = partners[0];
+            if (user.id >= partner.user_id) return; // Prevent double create
 
-            const partner = waitingUsers[0];
-            const shouldCreateCall = user.id < partner.user_id;
-
-            if (!shouldCreateCall) {
-              console.log('Waiting for partner to create call...');
-              return;
-            }
-
-            // Create the call
-            console.log('Creating call with partner:', partner.user_id);
-            const { data: newCall, error: callError } = await supabase
+            // Create call
+            const { data: call } = await supabase
               .from('calls')
               .insert({
                 user1_id: user.id,
@@ -269,65 +240,52 @@ export default function VibeMatch() {
               .select()
               .single();
 
-            if (callError) throw callError;
-
-            // Update queue entries
             await Promise.all([
-              supabase
-                .from('call_queue')
-                .update({ status: 'matched', matched_with: partner.user_id })
-                .eq('id', queueEntry.id),
-              supabase
-                .from('call_queue')
-                .update({ status: 'matched', matched_with: user.id })
-                .eq('id', partner.id),
+              supabase.from('call_queue').update({ status: 'matched', matched_with: partner.user_id }).eq('id', queueEntry.id),
+              supabase.from('call_queue').update({ status: 'matched', matched_with: user.id }).eq('id', partner.id),
             ]);
 
-            console.log('Match created! Call ID:', newCall.id);
-            clearInterval(pollInterval);
-            await connectToCall(newCall.id);
+            console.log('Call created:', call.id);
+            clearInterval(poll);
+            await connectToCall(call.id);
           } catch (err) {
-            console.error('Polling error:', err);
+            console.error('Poll error:', err);
           }
         }, 2000);
 
-        // Cleanup on unmount
         return () => {
           cleanupRef.current = true;
-          clearInterval(pollInterval);
+          clearInterval(poll);
         };
-      } catch (err) {
-        console.error('Match error:', err);
-        setError('Failed to find a match. Please try again.');
+      } catch (err: any) {
+        console.error('Match failed:', err);
+        setError('Failed to find match. Try again.');
         setStatus('error');
       }
     };
 
+    // === CONNECT TO CALL ===
     const connectToCall = async (callId: string) => {
       try {
         setStatus('connecting');
-        console.log('Connecting to call:', callId);
-
         const room = `call-${callId}`;
         setRoomName(room);
 
+        console.log('Requesting LiveKit token for:', { room, userId: user.id });
+
         const { data, error } = await supabase.functions.invoke('get-livekit-token', {
-          body: { 
-            room: room, 
-            userId: user.id 
-          },
+          body: { room, userId: user.id },
         });
-        
+
         if (error || !data?.token) {
-          console.error('LiveKit token error:', error || 'No token returned');
-          throw new Error('Failed to get LiveKit token');
+          throw new Error('LiveKit token failed');
         }
 
         setToken(data.token);
         setTimeout(() => setStatus('in-call'), 500);
-      } catch (err) {
-        console.error('Connection error:', err);
-        setError('Failed to connect. Please try again.');
+      } catch (err: any) {
+        console.error('Connect failed:', err.message);
+        setError('Failed to connect. Try again.');
         setStatus('error');
       }
     };
@@ -335,78 +293,51 @@ export default function VibeMatch() {
     findMatch();
   }, [user?.id, vibe]);
 
+  // === LEAVE CALL ===
   const handleLeave = async () => {
     cleanupRef.current = true;
 
     if (user?.id) {
-      await supabase
-        .from('call_queue')
-        .delete()
-        .eq('user_id', user.id);
-
-      await supabase
-        .from('users')
-        .update({ status: 'online', current_call_id: null })
-        .eq('id', user.id);
+      await supabase.from('call_queue').delete().eq('user_id', user.id);
+      await supabase.from('users').update({ status: 'online', current_call_id: null }).eq('id', user.id);
     }
 
     navigate('/onboarding');
   };
 
-  // Error state
+  // === RENDER STATES ===
   if (status === 'error') {
     return (
-      <div className="min-h-screen flex items-center justify-center px-4 py-8 bg-gradient-to-b from-gray-900 to-gray-800">
-        <motion.div
-          initial={{ scale: 0 }}
-          animate={{ scale: 1 }}
-          className="w-full max-w-sm bg-gray-900 rounded-3xl p-8 text-center shadow-neon-glow"
-        >
+      <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-b from-gray-900 to-gray-800">
+        <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="w-full max-w-sm bg-gray-900 rounded-3xl p-8 text-center shadow-neon-glow">
           <h2 className="text-2xl font-bold mb-4 text-red-400">Connection Failed</h2>
           <p className="text-gray-300 mb-6">{error}</p>
-          <Button variant="primary" onClick={() => navigate('/onboarding')}>
-            Try Again
-          </Button>
+          <Button variant="primary" onClick={() => navigate('/onboarding')}>Try Again</Button>
         </motion.div>
       </div>
     );
   }
 
-  // Searching/Connecting state
   if (status !== 'in-call') {
     return (
-      <div className="min-h-screen flex items-center justify-center px-4 py-8 bg-gradient-to-b from-gray-900 to-gray-800">
-        <motion.div
-          initial={{ scale: 0 }}
-          animate={{ scale: 1 }}
-          className="w-full max-w-sm bg-gray-900 rounded-3xl p-8 text-center shadow-neon-glow"
-        >
+      <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-b from-gray-900 to-gray-800">
+        <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="w-full max-w-sm bg-gray-900 rounded-3xl p-8 text-center shadow-neon-glow">
           <h2 className="text-2xl font-bold mb-4 neon-text">
             {status === 'searching' ? 'Finding your vibe match...' : 'Connecting...'}
           </h2>
           {status === 'searching' && (
             <>
-              <motion.div
-                animate={{ width: `${progress}%` }}
-                className="h-2 bg-neon-gradient rounded-full mb-4"
-              />
-              <p className="text-sm text-gray-400 mb-6">
-                Looking for someone with the same energy
-              </p>
+              <motion.div animate={{ width: `${progress}%` }} className="h-2 bg-neon-gradient rounded-full mb-4" />
+              <p className="text-sm text-gray-400 mb-6">Looking for someone with the same energy</p>
             </>
           )}
-          <Button variant="secondary" onClick={handleLeave}>
-            Cancel
-          </Button>
+          <Button variant="secondary" onClick={handleLeave}>Cancel</Button>
         </motion.div>
       </div>
     );
   }
 
-  // In-call state
-  if (!token || !roomName) {
-    return null;
-  }
+  if (!token || !roomName) return null;
 
   return (
     <LiveKitRoom
