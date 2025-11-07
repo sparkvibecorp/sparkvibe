@@ -312,11 +312,15 @@ export default function VibeMatch() {
         setRoomName(room);
 
         const { data, error } = await supabase.functions.invoke('get-livekit-token', {
-          body: { room, userId: user.id },
+          body: { 
+            room: room, 
+            userId: user.id 
+          },
         });
-
+        
         if (error || !data?.token) {
-          throw new Error('Failed to get token');
+          console.error('LiveKit token error:', error || 'No token returned');
+          throw new Error('Failed to get LiveKit token');
         }
 
         setToken(data.token);
