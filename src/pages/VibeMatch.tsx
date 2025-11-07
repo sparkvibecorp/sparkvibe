@@ -169,134 +169,95 @@ export default function VibeMatch() {
   useEffect(() => {
     if (!user?.id || matchingRef.current) return;
     matchingRef.current = true;
-
-    const findMatch = async () => {
+  
+    const start = async () => {
       try {
-        console.log('Starting match for vibe:', vibe);
-
-        if (!user?.id) {
-          setError('Please sign in again.');
-          setStatus('error');
-          return;
-        }
-
         await upsertProfileIfMissing(user.id);
         await supabase.from('call_queue').delete().eq('user_id', user.id);
-
-        const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
-        const { data: queueEntry, error: queueError } = await supabase
+  
+        const { data: queueEntry } = await supabase
           .from('call_queue')
           .insert({
             user_id: user.id,
             duration: 5,
             status: 'waiting',
-            expires_at: expiresAt,
+            expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
           })
           .select()
           .single();
-
-        if (queueError) throw queueError;
+  
         console.log('In queue:', queueEntry.id);
-
-        await supabase.from('users').update({ status: 'in_queue' }).eq('id', user.id);
-
-        // === CONNECT TO CALL (INSIDE) ===
-        const connectToCall = async (callId: string) => {
-          try {
-            setStatus('connecting');
-            const room = `call-${callId}`;
-            setRoomName(room);
-
-            console.log('Requesting LiveKit token for:', { room, userId: user.id });
-
-            const { data, error } = await supabase.functions.invoke('get-livekit-token', {
-              body: { room, userId: user.id },
-            });
-
-            if (error || !data?.token) {
-              console.error('Token error:', error, data);
-              throw new Error('LiveKit token failed');
+  
+        // === REAL-TIME SUBSCRIPTION ===
+        const channel = supabase
+          .channel(`queue-${queueEntry.id}`)
+          .on(
+            'postgres_changes',
+            {
+              event: 'UPDATE',
+              schema: 'public',
+              table: 'call_queue',
+              filter: `id=eq.${queueEntry.id}`,
+            },
+            (payload) => {
+              const row = payload.new as any;
+              if (row.status === 'matched' && row.call_id) {
+                console.log('MATCH via Realtime!', row.call_id);
+                supabase.removeChannel(channel);
+                connectToCall(row.call_id);
+              }
             }
-
-            setToken(data.token);
-            setTimeout(() => setStatus('in-call'), 500);
-          } catch (err: any) {
-            console.error('Connect failed:', err.message);
-            setError('Failed to connect. Try again.');
-            setStatus('error');
-          }
-        };
-
-        // === POLLING ===
-        const poll = setInterval(async () => {
-          if (cleanupRef.current) return clearInterval(poll);
-
-          try {
-            const { data: matched } = await supabase
-              .from('call_queue')
-              .select('*, calls!inner(*)')
-              .eq('id', queueEntry.id)
-              .eq('status', 'matched')
-              .maybeSingle();
-
-            if (matched?.calls?.id) {
-              console.log('MATCH FOUND! Call ID:', matched.calls.id);
-              clearInterval(poll);
-              await connectToCall(matched.calls.id);
-              return;
+          )
+          .subscribe((status, err) => {
+            console.log('Realtime status:', status, err);
+            if (status === 'SUBSCRIBED') {
+              console.log('SLOT ACTIVATED');
             }
-
-            const { data: partners } = await supabase
-              .from('call_queue')
-              .select('*')
-              .eq('status', 'waiting')
-              .eq('duration', 5)
-              .neq('user_id', user.id)
-              .order('created_at')
-              .limit(1);
-
-            if (!partners?.[0]) return;
-
-            const partner = partners[0];
-            if (user.id >= partner.user_id) return;
-
-            const { data: call } = await supabase
-              .from('calls')
-              .insert({
-                user1_id: user.id,
-                user2_id: partner.user_id,
-                planned_duration: 5,
-                status: 'active',
-                started_at: new Date().toISOString(),
-              })
-              .select()
-              .single();
-
-            await Promise.all([
-              supabase.from('call_queue').update({ status: 'matched', matched_with: partner.user_id }).eq('id', queueEntry.id),
-              supabase.from('call_queue').update({ status: 'matched', matched_with: user.id }).eq('id', partner.id),
-            ]);
-
-            console.log('CALL CREATED:', call.id);
-            clearInterval(poll);
-            await connectToCall(call.id);
-          } catch (err) {
-            console.error('Poll error:', err);
-          }
-        }, 2000);
-
-        return () => {
-          cleanupRef.current = true;
-          clearInterval(poll);
+          });
+  
+        // === FALLBACK: Try to create match ===
+        const tryMatch = async () => {
+          const { data: partners } = await supabase
+            .from('call_queue')
+            .select('*')
+            .eq('status', 'waiting')
+            .neq('user_id', user.id)
+            .limit(1);
+  
+          if (!partners?.[0]) return;
+          if (user.id > partners[0].user_id) return;
+  
+          const { data: call } = await supabase
+            .from('calls')
+            .insert({
+              user1_id: user.id,
+              user2_id: partners[0].user_id,
+              planned_duration: 5,
+              status: 'active',
+              started_at: new Date().toISOString(),
+            })
+            .select()
+            .single();
+  
+          await Promise.all([
+            supabase.from('call_queue').update({ status: 'matched', call_id: call.id }).eq('id', queueEntry.id),
+            supabase.from('call_queue').update({ status: 'matched', call_id: call.id }).eq('id', partners[0].id),
+          ]);
+  
+          console.log('CALL CREATED:', call.id);
+          supabase.removeChannel(channel);
+          await connectToCall(call.id);
         };
-      } catch (err: any) {
-        console.error('Match failed:', err);
-        setError('Failed to find match.');
+  
+        tryMatch();
+      } catch (err) {
+        console.error('Match error:', err);
+        setError('Failed to match');
         setStatus('error');
       }
     };
-
-    findMatch();
+  
+    start();
   }, [user?.id, vibe]);
 
   // === LEAVE CALL ===
