@@ -135,7 +135,12 @@ export default function VibeMatch() {
     const findMatch = async () => {
       try {
         console.log('🔍 Starting match search for vibe:', vibe);
-
+        if (!user?.id) {
+          console.error('No user ID – cannot start matching');
+          setError('Authentication required. Please sign in again.');
+          setStatus('error');
+          return;
+        }
         // Clean up old queue entries for this user
         await supabase
           .from('call_queue')

@@ -20,31 +20,58 @@ export function useAuth() {
       setLoading(false);
     });
 
-    // Listen for changes (including redirect)
+    // Listen for auth changes
     const { data: listener } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
+      async (event, session) => {
         setSession(session);
         setUser(session?.user ?? null);
         setLoading(false);
         setError(null);
+
+        // Auto-create profile on first sign-in
+        if (event === 'SIGNED_IN' && session?.user) {
+          await createUserProfile(session.user);
+        }
       }
     );
 
     return () => listener.subscription.unsubscribe();
   }, []);
 
+  // Create or update user profile
+  const createUserProfile = async (user: User) => {
+    const { error } = await supabase
+      .from('users')
+      .upsert(
+        {
+          id: user.id,
+          email: user.email,
+          full_name: user.user_metadata.full_name,
+          avatar_url: user.user_metadata.avatar_url,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'id' }
+      );
+
+    if (error) {
+      console.error('Failed to create user profile:', error);
+    } else {
+      console.log('User profile synced:', user.id);
+    }
+  };
+
   const signIn = async () => {
     try {
       setLoading(true);
       setError(null);
-      
-      const { error } = await supabase.auth.signInWithOAuth({ 
+
+      const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: `${window.location.origin}/onboarding`
-        }
+          redirectTo: `${window.location.origin}/onboarding`,
+        },
       });
-      
+
       if (error) throw error;
     } catch (err: any) {
       console.error('Sign in error:', err);
@@ -57,18 +84,18 @@ export function useAuth() {
     try {
       setLoading(true);
       setError(null);
-      
-      // Clean up user status
+
+      // Set offline status
       if (user?.id) {
         await supabase
           .from('users')
           .update({ status: 'offline', current_call_id: null })
           .eq('id', user.id);
       }
-      
+
       const { error } = await supabase.auth.signOut();
       if (error) throw error;
-      
+
       setUser(null);
       setSession(null);
     } catch (err: any) {
