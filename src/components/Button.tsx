@@ -1,31 +1,32 @@
-import { type ButtonHTMLAttributes, forwardRef } from 'react';
-import { motion, type HTMLMotionProps } from 'framer-motion';
+import { forwardRef } from 'react';
+import { motion } from 'framer-motion';
+import type { HTMLMotionProps } from 'framer-motion';
 
-type ButtonMotionProps = HTMLMotionProps<'button'>;
 
-interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+interface ButtonProps extends HTMLMotionProps<'button'> {
   variant?: 'primary' | 'secondary';
 }
 
 const Button = forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ variant = 'primary', children, className = '', ...props }, ref) => {
+  ({ variant = 'primary', children, className = '', disabled, ...props }, ref) => {
     const base =
-      'px-6 py-3 rounded-full font-semibold transition-all duration-300 focus:outline-none focus:ring-4';
+      'px-6 py-3 rounded-full font-semibold transition-all duration-300 focus:outline-none focus:ring-4 disabled:opacity-50 disabled:cursor-not-allowed';
 
     const variants = {
       primary:
-        'bg-neon-gradient text-white shadow-neon-glow hover:scale-105',
+        'bg-neon-gradient text-white shadow-neon-glow hover:scale-105 focus:ring-neonPurple/50',
       secondary:
-        'border border-neonPurple text-neonPurple hover:bg-neonPurple hover:text-white',
+        'border border-neonPurple text-neonPurple hover:bg-neonPurple hover:text-white focus:ring-neonPurple/50',
     };
 
     return (
       <motion.button
         ref={ref}
         className={`${base} ${variants[variant]} ${className}`}
-        {...(props as ButtonMotionProps)}
-        whileHover={{ scale: 1.05 }}
-        whileTap={{ scale: 0.95 }}
+        disabled={disabled}
+        whileHover={disabled ? {} : { scale: 1.05 }}
+        whileTap={disabled ? {} : { scale: 0.95 }}
+        {...props}
       >
         {children}
       </motion.button>

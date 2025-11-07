@@ -1,3 +1,9 @@
+/**
+ * @unused
+ * Fetches live user statistics.
+ * TODO: Add stats display to Landing page.
+ */
+
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import type { LiveStats } from '../types'

@@ -6,12 +6,13 @@ export const useMatching = (userId: string | undefined, duration: number) => {
   const [matchedCall, setMatchedCall] = useState<Call | null>(null);
   const [isMatching, setIsMatching] = useState(false);
   
-  const matchingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // Use ReturnType<typeof setInterval> so it works in browser and node without NodeJS namespace
+  const matchingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const queueEntryIdRef = useRef<string | null>(null);
   const matchAttemptRef = useRef(0);
   const hasMatchedRef = useRef(false);
   const isMountedRef = useRef(true);
-  const isProcessingRef = useRef(false); // NEW: Prevent concurrent processing
+  const isProcessingRef = useRef(false);
 
   const cleanup = useCallback(async () => {
     console.log('Cleaning up matching...');
@@ -81,19 +82,16 @@ export const useMatching = (userId: string | undefined, duration: number) => {
   }, [userId]);
 
   const attemptMatch = useCallback(async () => {
-    // Guard: Already matched or processing
     if (!userId || hasMatchedRef.current || isProcessingRef.current) {
       return;
     }
 
-    // Set processing flag to block concurrent attempts
     isProcessingRef.current = true;
   
     matchAttemptRef.current += 1;
     console.log('Match attempt #' + matchAttemptRef.current);
   
     try {
-      // Check again after async boundary
       if (hasMatchedRef.current) {
         isProcessingRef.current = false;
         return;
@@ -116,7 +114,6 @@ export const useMatching = (userId: string | undefined, duration: number) => {
   
       console.log('Found waiting users:', waitingUsers?.length || 0);
   
-      // No waiting users - check if someone created a call for us
       if (!waitingUsers || waitingUsers.length === 0) {
         const recentTime = new Date(Date.now() - 30000).toISOString();
         
@@ -203,7 +200,6 @@ export const useMatching = (userId: string | undefined, duration: number) => {
         return;
       }
       
-      // Final check before creating call
       if (hasMatchedRef.current) {
         isProcessingRef.current = false;
         return;
@@ -363,8 +359,10 @@ export const useMatching = (userId: string | undefined, duration: number) => {
 
   const cancelMatching = useCallback(async () => {
     console.log('Canceling matching');
+    
+    // FIX: Reset matchedCall state
+    setMatchedCall(null);
     setIsMatching(false);
-    setMatchedCall(null); // ADD THIS LINE - it's missing!
     
     if (userId) {
       await supabase.from('call_queue').delete().eq('user_id', userId);

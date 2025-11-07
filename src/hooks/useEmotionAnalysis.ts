@@ -1,3 +1,9 @@
+/**
+ * @experimental
+ * Emotion detection from audio analysis.
+ * Not currently used in UI - planned for future feature.
+ */
+
 import { useEffect, useState, useRef } from 'react';
 
 type Emotion = 'calm' | 'excited' | 'happy' | 'anxious' | 'sad' | 'angry';
