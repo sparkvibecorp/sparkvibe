@@ -23,9 +23,12 @@ export function useAuth() {
           status: 'online',
           updated_at: new Date().toISOString(),
         },
-        { onConflict: 'id' } // <-- crucial
+        { 
+          onConflict: 'id',   // ← Correct: object option
+          ignoreDuplicates: false 
+        }
       );
-
+  
     if (error) {
       console.error('upsertProfile error:', error);
     } else {

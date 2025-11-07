@@ -122,23 +122,33 @@ export default function VibeMatch() {
       .select('id')
       .eq('id', uid)
       .maybeSingle();
-
+  
     if (error) {
       console.error('Profile check error:', error);
       return;
     }
+  
     if (!data) {
-      // Row missing → create it
       const { data: authUser } = await supabase.auth.getUser();
-      await supabase.from('users').insert({
-        id: uid,
-        email: authUser.user?.email ?? '',
-        full_name: authUser.user?.user_metadata.full_name ?? null,
-        avatar_url: authUser.user?.user_metadata.avatar_url ?? null,
-        status: 'online',
-        updated_at: new Date().toISOString(),
-      });
-      console.log('Created missing users row for', uid);
+      const { error: insertError } = await supabase
+        .from('users')
+        .upsert(
+          {
+            id: uid,
+            email: authUser.user?.email ?? '',
+            full_name: authUser.user?.user_metadata.full_name ?? null,
+            avatar_url: authUser.user?.user_metadata.avatar_url ?? null,
+            status: 'online',
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'id' }  // ← Correct
+        );
+  
+      if (insertError) {
+        console.error('Failed to create missing profile:', insertError);
+      } else {
+        console.log('Created missing users row for', uid);
+      }
     }
   };
 
