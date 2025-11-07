@@ -8,29 +8,57 @@ export function useAuth() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  /* --------------------------------------------------------------
+     Helper: upsert user profile (idempotent)
+  -------------------------------------------------------------- */
+  const upsertProfile = async (u: User) => {
+    const { error } = await supabase
+      .from('users')
+      .upsert(
+        {
+          id: u.id,
+          email: u.email!,
+          full_name: u.user_metadata.full_name ?? null,
+          avatar_url: u.user_metadata.avatar_url ?? null,
+          status: 'online',
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'id' } // <-- crucial
+      );
+
+    if (error) {
+      console.error('upsertProfile error:', error);
+    } else {
+      console.log('Profile synced for', u.id);
+    }
+  };
+
+  /* --------------------------------------------------------------
+     Initial session + auth listener
+  -------------------------------------------------------------- */
   useEffect(() => {
-    // Get initial session
+    // 1. Get current session
     supabase.auth.getSession().then(({ data: { session }, error }) => {
-      if (error) {
-        console.error('Error getting session:', error);
-        setError(error.message);
-      }
+      if (error) console.error('getSession error:', error);
       setSession(session);
       setUser(session?.user ?? null);
       setLoading(false);
+
+      // If we already have a session, make sure profile exists
+      if (session?.user) upsertProfile(session.user);
     });
 
-    // Listen for auth changes
+    // 2. Listen for any auth change
     const { data: listener } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
+      async (event, sess) => {
+        setSession(sess);
+        setUser(sess?.user ?? null);
         setLoading(false);
         setError(null);
 
-        // Auto-create profile on first sign-in
-        if (event === 'SIGNED_IN' && session?.user) {
-          await createUserProfile(session.user);
+        // Create profile on first sign-in (or any sign-in)
+        if (event === 'SIGNED_IN' && sess?.user) {
+          await upsertProfile(sess.user);
         }
       }
     );
@@ -38,44 +66,21 @@ export function useAuth() {
     return () => listener.subscription.unsubscribe();
   }, []);
 
-  // Create or update user profile
-  const createUserProfile = async (user: User) => {
-    const { error } = await supabase
-      .from('users')
-      .upsert(
-        {
-          id: user.id,
-          email: user.email,
-          full_name: user.user_metadata.full_name,
-          avatar_url: user.user_metadata.avatar_url,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'id' }
-      );
-
-    if (error) {
-      console.error('Failed to create user profile:', error);
-    } else {
-      console.log('User profile synced:', user.id);
-    }
-  };
-
+  /* --------------------------------------------------------------
+     Sign-in / Sign-out
+  -------------------------------------------------------------- */
   const signIn = async () => {
     try {
       setLoading(true);
       setError(null);
-
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: {
-          redirectTo: `${window.location.origin}/onboarding`,
-        },
+        options: { redirectTo: `${window.location.origin}/onboarding` },
       });
-
       if (error) throw error;
-    } catch (err: any) {
-      console.error('Sign in error:', err);
-      setError(err.message || 'Failed to sign in');
+    } catch (e: any) {
+      console.error('signIn error:', e);
+      setError(e.message ?? 'Sign-in failed');
       setLoading(false);
     }
   };
@@ -85,7 +90,7 @@ export function useAuth() {
       setLoading(true);
       setError(null);
 
-      // Set offline status
+      // Mark offline
       if (user?.id) {
         await supabase
           .from('users')
@@ -98,9 +103,9 @@ export function useAuth() {
 
       setUser(null);
       setSession(null);
-    } catch (err: any) {
-      console.error('Sign out error:', err);
-      setError(err.message || 'Failed to sign out');
+    } catch (e: any) {
+      console.error('signOut error:', e);
+      setError(e.message ?? 'Sign-out failed');
     } finally {
       setLoading(false);
     }

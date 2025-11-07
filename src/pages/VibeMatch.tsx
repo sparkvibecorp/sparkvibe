@@ -70,7 +70,7 @@ function CallInterface({ onLeave }: { onLeave: () => void }) {
       </div>
 
       <p className="text-lg text-gray-300 mb-2">
-        {remoteTracks.length > 0 ? "Connected! Say hi 👋" : "Waiting for partner..."}
+        {remoteTracks.length > 0 ? "Connected! Say hi" : "Waiting for partner..."}
       </p>
       <p className="text-sm text-gray-500 mb-8">
         {remoteTracks.length} participant{remoteTracks.length !== 1 ? 's' : ''} in call
@@ -115,6 +115,33 @@ export default function VibeMatch() {
   const params = new URLSearchParams(location.search);
   const vibe = params.get('vibe') || 'default';
 
+  // === 2. PROFILE GUARANTEE HELPER ===
+  const upsertProfileIfMissing = async (uid: string) => {
+    const { data, error } = await supabase
+      .from('users')
+      .select('id')
+      .eq('id', uid)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Profile check error:', error);
+      return;
+    }
+    if (!data) {
+      // Row missing → create it
+      const { data: authUser } = await supabase.auth.getUser();
+      await supabase.from('users').insert({
+        id: uid,
+        email: authUser.user?.email ?? '',
+        full_name: authUser.user?.user_metadata.full_name ?? null,
+        avatar_url: authUser.user?.user_metadata.avatar_url ?? null,
+        status: 'online',
+        updated_at: new Date().toISOString(),
+      });
+      console.log('Created missing users row for', uid);
+    }
+  };
+
   // Progress bar animation
   useEffect(() => {
     if (status !== 'searching') return;
@@ -134,13 +161,19 @@ export default function VibeMatch() {
 
     const findMatch = async () => {
       try {
-        console.log('🔍 Starting match search for vibe:', vibe);
+        console.log('Starting match search for vibe:', vibe);
+
+        // === 1. GUARD: user.id must exist ===
         if (!user?.id) {
           console.error('No user ID – cannot start matching');
           setError('Authentication required. Please sign in again.');
           setStatus('error');
           return;
         }
+
+        // === 2. ENSURE PROFILE EXISTS BEFORE QUEUE INSERT ===
+        await upsertProfileIfMissing(user.id);
+
         // Clean up old queue entries for this user
         await supabase
           .from('call_queue')
@@ -153,7 +186,7 @@ export default function VibeMatch() {
           .from('call_queue')
           .insert({
             user_id: user.id,
-            duration: 5, // Default 5 minutes
+            duration: 5,
             status: 'waiting',
             expires_at: expiresAt,
           })
@@ -161,7 +194,7 @@ export default function VibeMatch() {
           .single();
 
         if (queueError) throw queueError;
-        console.log('✅ Added to queue:', queueEntry.id);
+        console.log('Added to queue:', queueEntry.id);
 
         // Update user status
         await supabase
@@ -197,7 +230,7 @@ export default function VibeMatch() {
                 .maybeSingle();
 
               if (matched) {
-                console.log('✅ Found existing match!');
+                console.log('Found existing match!');
                 clearInterval(pollInterval);
                 await connectToCall(matched.calls.id);
               }
@@ -208,12 +241,12 @@ export default function VibeMatch() {
             const shouldCreateCall = user.id < partner.user_id;
 
             if (!shouldCreateCall) {
-              console.log('⏳ Waiting for partner to create call...');
+              console.log('Waiting for partner to create call...');
               return;
             }
 
             // Create the call
-            console.log('📞 Creating call with partner:', partner.user_id);
+            console.log('Creating call with partner:', partner.user_id);
             const { data: newCall, error: callError } = await supabase
               .from('calls')
               .insert({
@@ -240,11 +273,11 @@ export default function VibeMatch() {
                 .eq('id', partner.id),
             ]);
 
-            console.log('✅ Match created! Call ID:', newCall.id);
+            console.log('Match created! Call ID:', newCall.id);
             clearInterval(pollInterval);
             await connectToCall(newCall.id);
           } catch (err) {
-            console.error('❌ Polling error:', err);
+            console.error('Polling error:', err);
           }
         }, 2000);
 
@@ -254,7 +287,7 @@ export default function VibeMatch() {
           clearInterval(pollInterval);
         };
       } catch (err) {
-        console.error('❌ Match error:', err);
+        console.error('Match error:', err);
         setError('Failed to find a match. Please try again.');
         setStatus('error');
       }
@@ -263,13 +296,11 @@ export default function VibeMatch() {
     const connectToCall = async (callId: string) => {
       try {
         setStatus('connecting');
-        console.log('🔌 Connecting to call:', callId);
+        console.log('Connecting to call:', callId);
 
-        // Generate unique room name for this call
         const room = `call-${callId}`;
         setRoomName(room);
 
-        // Get LiveKit token
         const { data, error } = await supabase.functions.invoke('get-livekit-token', {
           body: { room, userId: user.id },
         });
@@ -281,7 +312,7 @@ export default function VibeMatch() {
         setToken(data.token);
         setTimeout(() => setStatus('in-call'), 500);
       } catch (err) {
-        console.error('❌ Connection error:', err);
+        console.error('Connection error:', err);
         setError('Failed to connect. Please try again.');
         setStatus('error');
       }
@@ -294,13 +325,11 @@ export default function VibeMatch() {
     cleanupRef.current = true;
 
     if (user?.id) {
-      // Clean up queue
       await supabase
         .from('call_queue')
         .delete()
         .eq('user_id', user.id);
 
-      // Update user status
       await supabase
         .from('users')
         .update({ status: 'online', current_call_id: null })
