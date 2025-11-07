@@ -11,7 +11,7 @@ import '@livekit/components-styles';
 
 const LIVEKIT_URL = import.meta.env.VITE_LIVEKIT_URL;
 
-// Inner Call UI
+// Call UI
 function CallInterface({ onLeave }: { onLeave: () => void }) {
   const { localParticipant } = useLocalParticipant();
   const [isMuted, setIsMuted] = useState(false);
@@ -167,7 +167,7 @@ export default function VibeMatch() {
           return;
         }
 
-        // 1. Ensure profile exists
+        // 1. Ensure profile
         await upsertProfileIfMissing(user.id);
 
         // 2. Clean old queue
@@ -225,7 +225,7 @@ export default function VibeMatch() {
             if (!partners?.[0]) return;
 
             const partner = partners[0];
-            if (user.id >= partner.user_id) return; // Prevent double create
+            if (user.id >= partner.user_id) return;
 
             // Create call
             const { data: call } = await supabase
@@ -305,7 +305,7 @@ export default function VibeMatch() {
     navigate('/onboarding');
   };
 
-  // === RENDER STATES ===
+  // === RENDER ===
   if (status === 'error') {
     return (
       <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-b from-gray-900 to-gray-800">
