@@ -5,7 +5,7 @@ import Button from '../components/Button';
 import { PhoneOff, User, Volume2, Mic, MicOff } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
-import { LiveKitRoom, useLocalParticipant, useTracks } from '@livekit/components-react';
+import { LiveKitRoom, useLocalParticipant, useTracks, useRoomContext } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import '@livekit/components-styles';
 
@@ -13,6 +13,7 @@ const LIVEKIT_URL = import.meta.env.VITE_LIVEKIT_URL;
 
 // Call UI
 function CallInterface({ onLeave }: { onLeave: () => void }) {
+  const room = useRoomContext();
   const { localParticipant } = useLocalParticipant();
   const [isMuted, setIsMuted] = useState(false);
   const [audioReady, setAudioReady] = useState(false);
@@ -26,6 +27,17 @@ function CallInterface({ onLeave }: { onLeave: () => void }) {
       const enabled = localParticipant.isMicrophoneEnabled;
       localParticipant.setMicrophoneEnabled(!enabled);
       setIsMuted(enabled);
+    }
+  };
+
+  // END CALL BUTTON — NOW WORKS
+  const handleEndCall = async () => {
+    try {
+      await room.disconnect();
+      onLeave();
+    } catch (err) {
+      console.error('Disconnect failed:', err);
+      onLeave();
     }
   };
 
@@ -79,8 +91,9 @@ function CallInterface({ onLeave }: { onLeave: () => void }) {
           {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
         </button>
 
+        {/* END CALL — NOW WORKS */}
         <button
-          onClick={onLeave}
+          onClick={handleEndCall}
           className="p-4 rounded-full bg-red-600 hover:bg-red-700 text-white shadow-neon-glow"
         >
           <PhoneOff className="w-6 h-6" />
@@ -167,13 +180,9 @@ export default function VibeMatch() {
           return;
         }
 
-        // 1. Ensure profile
         await upsertProfileIfMissing(user.id);
-
-        // 2. Clean old queue
         await supabase.from('call_queue').delete().eq('user_id', user.id);
 
-        // 3. Insert into queue
         const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
         const { data: queueEntry, error: queueError } = await supabase
           .from('call_queue')
@@ -189,15 +198,40 @@ export default function VibeMatch() {
         if (queueError) throw queueError;
         console.log('In queue:', queueEntry.id);
 
-        // 4. Update status
         await supabase.from('users').update({ status: 'in_queue' }).eq('id', user.id);
 
-        // 5. Poll for match
+        // === CONNECT TO CALL (INSIDE) ===
+        const connectToCall = async (callId: string) => {
+          try {
+            setStatus('connecting');
+            const room = `call-${callId}`;
+            setRoomName(room);
+
+            console.log('Requesting LiveKit token for:', { room, userId: user.id });
+
+            const { data, error } = await supabase.functions.invoke('get-livekit-token', {
+              body: { room, userId: user.id },
+            });
+
+            if (error || !data?.token) {
+              console.error('Token error:', error, data);
+              throw new Error('LiveKit token failed');
+            }
+
+            setToken(data.token);
+            setTimeout(() => setStatus('in-call'), 500);
+          } catch (err: any) {
+            console.error('Connect failed:', err.message);
+            setError('Failed to connect. Try again.');
+            setStatus('error');
+          }
+        };
+
+        // === POLLING ===
         const poll = setInterval(async () => {
           if (cleanupRef.current) return clearInterval(poll);
 
           try {
-            // Check if matched
             const { data: matched } = await supabase
               .from('call_queue')
               .select('*, calls!inner(*)')
@@ -206,13 +240,12 @@ export default function VibeMatch() {
               .maybeSingle();
 
             if (matched?.calls?.id) {
-              console.log('Match found! Call:', matched.calls.id);
+              console.log('MATCH FOUND! Call ID:', matched.calls.id);
               clearInterval(poll);
               await connectToCall(matched.calls.id);
               return;
             }
 
-            // Find partner
             const { data: partners } = await supabase
               .from('call_queue')
               .select('*')
@@ -227,7 +260,6 @@ export default function VibeMatch() {
             const partner = partners[0];
             if (user.id >= partner.user_id) return;
 
-            // Create call
             const { data: call } = await supabase
               .from('calls')
               .insert({
@@ -245,7 +277,7 @@ export default function VibeMatch() {
               supabase.from('call_queue').update({ status: 'matched', matched_with: user.id }).eq('id', partner.id),
             ]);
 
-            console.log('Call created:', call.id);
+            console.log('CALL CREATED:', call.id);
             clearInterval(poll);
             await connectToCall(call.id);
           } catch (err) {
@@ -259,33 +291,7 @@ export default function VibeMatch() {
         };
       } catch (err: any) {
         console.error('Match failed:', err);
-        setError('Failed to find match. Try again.');
-        setStatus('error');
-      }
-    };
-
-    // === CONNECT TO CALL ===
-    const connectToCall = async (callId: string) => {
-      try {
-        setStatus('connecting');
-        const room = `call-${callId}`;
-        setRoomName(room);
-
-        console.log('Requesting LiveKit token for:', { room, userId: user.id });
-
-        const { data, error } = await supabase.functions.invoke('get-livekit-token', {
-          body: { room, userId: user.id },
-        });
-
-        if (error || !data?.token) {
-          throw new Error('LiveKit token failed');
-        }
-
-        setToken(data.token);
-        setTimeout(() => setStatus('in-call'), 500);
-      } catch (err: any) {
-        console.error('Connect failed:', err.message);
-        setError('Failed to connect. Try again.');
+        setError('Failed to find match.');
         setStatus('error');
       }
     };
@@ -302,6 +308,9 @@ export default function VibeMatch() {
       await supabase.from('users').update({ status: 'online', current_call_id: null }).eq('id', user.id);
     }
 
+    setToken(null);
+    setRoomName(null);
+    setStatus('searching');
     navigate('/onboarding');
   };
 
