@@ -18,9 +18,8 @@ export function useAuth() {
         {
           id: u.id,
           email: u.email!,
-          // Only include columns that exist in your table
-          // full_name: u.user_metadata.full_name ?? null,
-          // avatar_url: u.user_metadata.avatar_url ?? null,
+          full_name: u.user_metadata.full_name ?? null,
+          avatar_url: u.user_metadata.avatar_url ?? null,
           status: 'online',
           updated_at: new Date().toISOString(),
         },

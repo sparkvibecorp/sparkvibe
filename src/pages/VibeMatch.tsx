@@ -136,7 +136,8 @@ export default function VibeMatch() {
           {
             id: uid,
             email: authUser.user?.email ?? '',
-            // Do NOT include full_name or avatar_url unless you added them
+            full_name: authUser.user?.user_metadata.full_name ?? null,
+            avatar_url: authUser.user?.user_metadata.avatar_url ?? null,
             status: 'online',
             updated_at: new Date().toISOString(),
           },
