@@ -170,12 +170,15 @@ export default function VibeMatch() {
     if (!user?.id || matchingRef.current) return;
     matchingRef.current = true;
   
-    const start = async () => {
+    const startMatching = async () => {
       try {
-        await upsertProfileIfMissing(user.id);
+        console.log('Starting match...');
+  
+        // 1. Clean old queue
         await supabase.from('call_queue').delete().eq('user_id', user.id);
   
-        const { data: queueEntry } = await supabase
+        // 2. Insert into queue
+        const { data: queueEntry, error: insertError } = await supabase
           .from('call_queue')
           .insert({
             user_id: user.id,
@@ -186,11 +189,15 @@ export default function VibeMatch() {
           .select()
           .single();
   
-        console.log('In queue:', queueEntry.id);
+        if (insertError) throw insertError;
+        console.log('Queue entry:', queueEntry.id);
   
-        // === REAL-TIME SUBSCRIPTION ===
+        // 3. REAL-TIME SUBSCRIPTION
+        const channelName = `queue-${queueEntry.id}`;
+        console.log('Subscribing to:', channelName);
+  
         const channel = supabase
-          .channel(`queue-${queueEntry.id}`)
+          .channel(channelName)
           .on(
             'postgres_changes',
             {
@@ -200,23 +207,27 @@ export default function VibeMatch() {
               filter: `id=eq.${queueEntry.id}`,
             },
             (payload) => {
+              console.log('Realtime UPDATE:', payload);
               const row = payload.new as any;
               if (row.status === 'matched' && row.call_id) {
-                console.log('MATCH via Realtime!', row.call_id);
+                console.log('MATCHED! Call ID:', row.call_id);
                 supabase.removeChannel(channel);
                 connectToCall(row.call_id);
               }
             }
           )
           .subscribe((status, err) => {
-            console.log('Realtime status:', status, err);
+            console.log('Realtime status:', status, 'Error:', err);
             if (status === 'SUBSCRIBED') {
-              console.log('SLOT ACTIVATED');
+              console.log('SUBSCRIBED — SLOT WILL ACTIVATE');
+            }
+            if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+              console.error('Realtime failed:', err);
             }
           });
   
-        // === FALLBACK: Try to create match ===
-        const tryMatch = async () => {
+        // 4. Try to find partner
+        const tryFindPartner = async () => {
           const { data: partners } = await supabase
             .from('call_queue')
             .select('*')
@@ -249,15 +260,15 @@ export default function VibeMatch() {
           await connectToCall(call.id);
         };
   
-        tryMatch();
-      } catch (err) {
-        console.error('Match error:', err);
+        tryFindPartner();
+      } catch (err: any) {
+        console.error('Match failed:', err);
         setError('Failed to match');
         setStatus('error');
       }
     };
   
-    start();
+    startMatching();
   }, [user?.id, vibe]);
 
   // === LEAVE CALL ===
