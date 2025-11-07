@@ -136,12 +136,11 @@ export default function VibeMatch() {
           {
             id: uid,
             email: authUser.user?.email ?? '',
-            full_name: authUser.user?.user_metadata.full_name ?? null,
-            avatar_url: authUser.user?.user_metadata.avatar_url ?? null,
+            // Do NOT include full_name or avatar_url unless you added them
             status: 'online',
             updated_at: new Date().toISOString(),
           },
-          { onConflict: 'id' }  // ← Correct
+          { onConflict: 'id' }
         );
   
       if (insertError) {
